@@ -1,0 +1,18 @@
+[versions]
+agp = "8.13.0"
+appcompat = "1.7.1"
+localbroadcastmanager = "1.1.0"
+material = "1.13.0"
+constraintlayout = "2.2.1"
+poiOoxml = "5.4.1"
+
+[libraries]
+appcompat = { group = "androidx.appcompat", name = "appcompat", version.ref = "appcompat" }
+localbroadcastmanager = { module = "androidx.localbroadcastmanager:localbroadcastmanager", version.ref = "localbroadcastmanager" }
+material = { group = "com.google.android.material", name = "material", version.ref = "material" }
+constraintlayout = { group = "androidx.constraintlayout", name = "constraintlayout", version.ref = "constraintlayout" }
+poi = { module = "org.apache.poi:poi", version.ref = "poiOoxml" }
+poi-ooxml = { module = "org.apache.poi:poi-ooxml", version.ref = "poiOoxml" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }

@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">Web Recorder</string>
+    <string name="previous">Previous</string>
+    <string name="next">Next</string>
+    <string name="select_an_excel_file_to_begin">Select an Excel file to begin</string>
+    <string name="select_excel_file">Select Excel File</string>
+</resources>
