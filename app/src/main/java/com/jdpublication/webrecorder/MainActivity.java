@@ -22,6 +22,7 @@ import android.widget.Button;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.activity.OnBackPressedCallback;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.annotation.NonNull;
@@ -61,6 +62,7 @@ public class MainActivity extends AppCompatActivity {
     private MediaProjectionManager mediaProjectionManager;
     private boolean isRecording = false;
     private boolean isPaused = false;
+    boolean isLoadedFromExcel = true;
 
     private final ActivityResultLauncher<String[]> filePickerLauncher = registerForActivityResult(new ActivityResultContracts.OpenDocument(), uri -> {
         if (uri != null) {
@@ -74,7 +76,6 @@ public class MainActivity extends AppCompatActivity {
             onRecordingStopped();
         }
     };
-
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -90,15 +91,26 @@ public class MainActivity extends AppCompatActivity {
 
         mediaProjectionManager = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
         LocalBroadcastManager.getInstance(this).registerReceiver(recordingStoppedReceiver, new IntentFilter(RecordingService.ACTION_RECORDING_STOPPED));
+
+        getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
+            @Override
+            public void handleOnBackPressed() {
+                handleBackNavigation();
+            }
+        });
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-        // Sync UI with service state when returning to the app
         isRecording = RecordingService.isRecording;
         isPaused = RecordingService.isPaused;
         updateUiForRecordingState();
+
+        if (isRecording && !isPaused) {
+            handler.removeCallbacks(runnable);
+            handler.post(runnable);
+        }
     }
 
     @Override
@@ -119,8 +131,32 @@ public class MainActivity extends AppCompatActivity {
 
     @SuppressLint("SetJavaScriptEnabled")
     private void setupWebView() {
-        webView.setWebViewClient(new WebViewClient());
         webView.getSettings().setJavaScriptEnabled(true);
+        webView.getSettings().setDomStorageEnabled(true);
+        webView.getSettings().setDatabaseEnabled(true);
+    }
+
+    private void handleBackNavigation() {
+        if (webView.canGoBack()) {
+            webView.goBack();
+            return;
+        }
+
+        if (currentIndex > 0) {
+            currentIndex--;
+            loadCurrentUrl();
+            updateNavigationButtons();
+        }
+    }
+
+    private void updateBackButtonVisibility() {
+        ActionBar actionBar = getSupportActionBar();
+        if (actionBar == null) return;
+
+        boolean canGoBackInWeb = webView.canGoBack();
+        boolean canGoBackInList = currentIndex > 0;
+
+        actionBar.setDisplayHomeAsUpEnabled(canGoBackInWeb || canGoBackInList);
     }
 
     private void setupClickListeners() {
@@ -163,41 +199,72 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void parseExcelFile(Uri uri) {
-        urlDataList.clear();
-        currentIndex = -1;
-        try (InputStream is = getContentResolver().openInputStream(uri)) {
-            assert is != null;
-            Workbook workbook = new XSSFWorkbook(is);
-            Sheet sheet = workbook.getSheetAt(0);
-            Iterator<Row> rowIterator = sheet.iterator();
-            if (rowIterator.hasNext()) rowIterator.next(); // Skip header
-            while (rowIterator.hasNext()) {
-                Row row = rowIterator.next();
-                Cell fileNameCell = row.getCell(0);
-                Cell urlCell = row.getCell(1);
-                if (fileNameCell != null && urlCell != null) {
-                    urlDataList.add(new UrlData(fileNameCell.getStringCellValue(), urlCell.getStringCellValue()));
+        placeholderView.setText("Loading Excel File...");
+
+        new Thread(() -> {
+            try (InputStream is = getContentResolver().openInputStream(uri)) {
+                assert is != null;
+                Workbook workbook = new XSSFWorkbook(is);
+                Sheet sheet = workbook.getSheetAt(0);
+                Iterator<Row> rowIterator = sheet.iterator();
+
+                List<UrlData> tempList = new ArrayList<>();
+                if (rowIterator.hasNext()) rowIterator.next(); // Skip header
+                while (rowIterator.hasNext()) {
+                    Row row = rowIterator.next();
+                    Cell fileNameCell = row.getCell(0);
+                    Cell urlCell = row.getCell(1);
+                    if (fileNameCell != null && urlCell != null) {
+                        tempList.add(new UrlData(fileNameCell.getStringCellValue(), urlCell.getStringCellValue()));
+                    }
                 }
+
+                // Post results back to the Main Thread
+                runOnUiThread(() -> {
+                    urlDataList.clear();
+                    urlDataList.addAll(tempList);
+                    if (!urlDataList.isEmpty()) {
+                        currentIndex = 0;
+                        loadCurrentUrl();
+                        placeholderView.setVisibility(View.GONE);
+                        webView.setVisibility(View.VISIBLE);
+                    } else {
+                        Toast.makeText(MainActivity.this, "Excel file is empty or in wrong format.", Toast.LENGTH_LONG).show();
+                    }
+                    updateNavigationButtons();
+                });
+
+            } catch (Exception e) {
+                Log.e("ExcelError", "parseExcelFile: ", e);
+                runOnUiThread(() -> {
+                    placeholderView.setText("Failed to load file.");
+                    Toast.makeText(MainActivity.this, "Failed to read Excel file.", Toast.LENGTH_LONG).show();
+                });
             }
-            if (!urlDataList.isEmpty()) {
-                currentIndex = 0;
-                loadCurrentUrl();
-                placeholderView.setVisibility(View.GONE);
-                webView.setVisibility(View.VISIBLE);
-            } else {
-                Toast.makeText(this, "Excel file is empty or in the wrong format.", Toast.LENGTH_LONG).show();
-            }
-        } catch (Exception e) {
-            Log.d("TAG", "parseExcelFile: " + e);
-            Toast.makeText(this, "Failed to read Excel file.", Toast.LENGTH_LONG).show();
-        }
-        updateNavigationButtons();
+        }).start();
     }
 
     private void loadCurrentUrl() {
         if (currentIndex >= 0 && currentIndex < urlDataList.size()) {
+
             UrlData data = urlDataList.get(currentIndex);
+            isLoadedFromExcel = true;
+
             webView.loadUrl(data.getWebUrl());
+
+            // Clear history AFTER new page becomes base
+            webView.setWebViewClient(new WebViewClient() {
+                @Override
+                public void onPageFinished(WebView view, String url) {
+                    if (isLoadedFromExcel) {
+                        view.clearHistory();
+                    }
+                    updateBackButtonVisibility();
+                    isLoadedFromExcel = false;
+                    super.onPageFinished(view, url);
+                }
+            });
+
             ActionBar actionBar = getSupportActionBar();
             if (actionBar != null) {
                 actionBar.setTitle(data.getFilename());
@@ -267,18 +334,20 @@ public class MainActivity extends AppCompatActivity {
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == REQUEST_CODE_MEDIA_PROJECTION && resultCode == RESULT_OK) {
-            new Handler().postDelayed(() -> {
-                Intent serviceIntent = new Intent(this, RecordingService.class);
-                serviceIntent.putExtra("resultCode", resultCode);
-                serviceIntent.putExtra("data", data);
-                serviceIntent.putExtra("filename", urlDataList.get(currentIndex).getFilename());
-                startForegroundService(serviceIntent);
-                isRecording = true;
-                isPaused = false;
-                currentSec = 0;
-                handler.post(runnable);
-                updateUiForRecordingState();
-            }, 500);
+            // Start immediately to avoid background-execution limits
+            Intent serviceIntent = new Intent(this, RecordingService.class);
+            serviceIntent.putExtra("resultCode", resultCode);
+            serviceIntent.putExtra("data", data);
+            serviceIntent.putExtra("filename", urlDataList.get(currentIndex).getFilename());
+
+            ContextCompat.startForegroundService(this, serviceIntent); // Use ContextCompat for safety
+
+            isRecording = true;
+            isPaused = false;
+            currentSec = 0;
+            handler.removeCallbacks(runnable); // Clear any existing callbacks first
+            handler.post(runnable);
+            updateUiForRecordingState();
         } else if (requestCode == REQUEST_CODE_OVERLAY_PERMISSION) {
             if (Settings.canDrawOverlays(this)) startRecording();
             else Toast.makeText(this, "Overlay permission is required.", Toast.LENGTH_LONG).show();
@@ -305,6 +374,11 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     public boolean onOptionsItemSelected(MenuItem item) {
+        if (item.getItemId() == android.R.id.home) {
+            handleBackNavigation();
+            return true; // Add this to consume the click
+        }
+
         if (item.getItemId() == R.id.action_select_file) {
             filePickerLauncher.launch(new String[]{"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.ms-excel"});
             return true;
