@@ -1,6 +1,11 @@
 <menu xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto">
     <item
+        android:id="@+id/action_edit_current"
+        android:title="@string/edit_current"
+        android:icon="@drawable/ic_edit"
+        app:showAsAction="ifRoom" />
+    <item
         android:id="@+id/action_select_file"
         android:title="@string/select_excel_file"
         android:icon="@drawable/ic_files"

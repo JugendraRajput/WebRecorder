@@ -4,4 +4,18 @@
     <string name="next">Next</string>
     <string name="select_an_excel_file_to_begin">Select an Excel file to begin</string>
     <string name="select_excel_file">Select Excel File</string>
+    <string name="edit_current">Edit Current</string>
+    <string name="movie_name">Movie name</string>
+    <string name="wiki_url">Wiki URL</string>
+    <string name="edit_current_entry">Edit current entry</string>
+    <string name="save_changes">Save changes</string>
+    <string name="cancel">Cancel</string>
+    <string name="recording_continues_in_background">Recording continues in the background.</string>
+    <string name="press_back_again_to_exit">Press back again to exit.</string>
+    <string name="excel_loaded_read_only">Excel file loaded in read-only mode. Re-select it to allow editing.</string>
+    <string name="excel_changes_saved">Excel row updated successfully.</string>
+    <string name="excel_changes_failed">Failed to update the selected Excel file.</string>
+    <string name="select_excel_to_edit">Select the Excel file again to grant edit access.</string>
+    <string name="invalid_entry_values">Movie name and URL are both required.</string>
+    <string name="recording_starting">Preparing recording...</string>
 </resources>
