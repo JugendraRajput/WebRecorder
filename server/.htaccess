@@ -1,0 +1,30 @@
+# WebRecorder Apache Server Configuration
+# Domain: https://webrecorder.jdworks.in
+
+# Prevent directory browsing
+Options -Indexes
+
+# Set UTF-8 encoding
+AddDefaultCharset UTF-8
+
+# Increase upload limits for large MHT/HTML packages
+<IfModule mod_php7.c>
+    php_value upload_max_filesize 64M
+    php_value post_max_size 64M
+    php_value max_execution_time 300
+    php_value max_input_time 300
+</IfModule>
+
+<IfModule mod_php.c>
+    php_value upload_max_filesize 64M
+    php_value post_max_size 64M
+    php_value max_execution_time 300
+    php_value max_input_time 300
+</IfModule>
+
+# Enable CORS headers
+<IfModule mod_headers.c>
+    Header set Access-Control-Allow-Origin "*"
+    Header set Access-Control-Allow-Methods "GET, POST, OPTIONS"
+    Header set Access-Control-Allow-Headers "Content-Type, Authorization, X-Requested-With"
+</IfModule>

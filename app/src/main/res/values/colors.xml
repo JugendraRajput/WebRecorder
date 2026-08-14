@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Executive Minimalist Palette (Day / Light Mode) -->
+    <color name="primary">#1E293B</color>
+    <color name="primary_dark">#0F172A</color>
+    <color name="primary_container">#F1F5F9</color>
+    <color name="on_primary">#FFFFFF</color>
+    <color name="on_primary_container">#1E293B</color>
+
+    <!-- Main Motive: Recording Accent -->
+    <color name="color_record">#DC2626</color>
+    <color name="color_record_dark">#991B1B</color>
+    <color name="color_pause">#D97706</color>
+
+    <!-- Low-Profile Secondary Controls -->
+    <color name="secondary">#64748B</color>
+    <color name="secondary_container">#F1F5F9</color>
+    <color name="nav_button_tint">#475569</color>
+    <color name="nav_bar_bg">#F1F5F9</color>
+
+    <!-- Tonal Buttons -->
+    <color name="button_tonal_bg">#E2E8F0</color>
+    <color name="button_tonal_text">#1E293B</color>
+
+    <!-- Status & Badges -->
+    <color name="color_offline_badge">#059669</color>
+    <color name="color_offline_badge_container">#ECFDF5</color>
+
+    <!-- Surfaces & Neutrals -->
+    <color name="surface_background">#F8FAFC</color>
+    <color name="card_background">#FFFFFF</color>
+    <color name="card_stroke">#E2E8F0</color>
+    <color name="text_primary">#1E293B</color>
+    <color name="text_secondary">#64748B</color>
+    <color name="text_tertiary">#94A3B8</color>
+    <color name="divider_color">#E2E8F0</color>
+</resources>

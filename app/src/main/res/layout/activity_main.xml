@@ -4,19 +4,34 @@
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
+    android:background="@color/surface_background"
     tools:context=".MainActivity">
 
+    <!-- Top AppBar (fitsSystemWindows prevents status bar overlap) -->
     <com.google.android.material.appbar.AppBarLayout
         android:id="@+id/app_bar"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:theme="@style/Theme.AppCompat.DayNight.DarkActionBar">
+        android:background="@color/primary"
+        android:fitsSystemWindows="true"
+        app:elevation="2dp">
 
         <androidx.appcompat.widget.Toolbar
             android:id="@+id/toolbar"
             android:layout_width="match_parent"
             android:layout_height="?attr/actionBarSize"
-            app:popupTheme="@style/Theme.AppCompat.DayNight" />
+            app:popupTheme="@style/Theme.Material3.DayNight"
+            app:subtitleTextColor="#94A3B8"
+            app:titleTextColor="@android:color/white" />
+
+        <com.google.android.material.progressindicator.LinearProgressIndicator
+            android:id="@+id/progress_indicator"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:indeterminate="true"
+            android:visibility="gone"
+            app:indicatorColor="@color/color_record"
+            app:trackColor="@color/primary_dark" />
 
     </com.google.android.material.appbar.AppBarLayout>
 
@@ -25,96 +40,183 @@
         android:layout_height="match_parent"
         app:layout_behavior="@string/appbar_scrolling_view_behavior">
 
+        <!-- Full-screen WebView Area -->
         <WebView
             android:id="@+id/webView"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
+            android:layout_above="@id/navigation_controls"
             android:layout_alignParentTop="true"
-            android:layout_alignParentBottom="true"
             android:visibility="gone" />
 
+        <!-- Subtly floating Offline Badge -->
         <TextView
-            android:id="@+id/placeholder_view"
+            android:id="@+id/offline_badge"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_alignParentTop="true"
-            android:layout_centerHorizontal="true"
-            android:layout_marginTop="200dp"
-            android:gravity="center"
-            android:text="@string/select_an_excel_file_to_begin"
-            android:textAppearance="@style/TextAppearance.AppCompat.Large"
-            android:visibility="visible"
-            app:drawableTint="?android:attr/textColorSecondary"
-            app:drawableTopCompat="@drawable/sized_excel_icon" />
+            android:layout_alignParentEnd="true"
+            android:layout_marginTop="12dp"
+            android:layout_marginEnd="12dp"
+            android:background="@drawable/bg_offline_badge"
+            android:drawableStart="@drawable/ic_check_circle"
+            android:drawablePadding="6dp"
+            android:elevation="4dp"
+            android:gravity="center_vertical"
+            android:paddingStart="10dp"
+            android:paddingTop="4dp"
+            android:paddingEnd="12dp"
+            android:paddingBottom="4dp"
+            android:text="@string/offline_loaded"
+            android:textAppearance="@style/TextAppearance.Material3.LabelSmall"
+            android:textColor="@android:color/white"
+            android:visibility="gone" />
 
-        <!-- This container will be hidden/shown -->
+        <!-- Placeholder Card when no source is loaded -->
+        <ScrollView
+            android:id="@+id/placeholder_container"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:fillViewport="true">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center"
+                android:orientation="vertical"
+                android:padding="20dp">
+
+                <com.google.android.material.card.MaterialCardView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    app:cardBackgroundColor="@color/card_background"
+                    app:cardCornerRadius="16dp"
+                    app:cardElevation="1dp"
+                    app:strokeColor="@color/card_stroke"
+                    app:strokeWidth="1dp">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="center"
+                        android:orientation="vertical"
+                        android:padding="28dp">
+
+                        <ImageView
+                            android:layout_width="48dp"
+                            android:layout_height="48dp"
+                            android:contentDescription="@null"
+                            android:src="@drawable/ic_excel"
+                            app:tint="@color/secondary" />
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="16dp"
+                            android:text="@string/app_name"
+                            android:textAppearance="@style/TextAppearance.Material3.TitleMedium"
+                            android:textColor="@color/text_primary"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:id="@+id/placeholder_view"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="8dp"
+                            android:gravity="center"
+                            android:text="@string/select_an_excel_file_to_begin"
+                            android:textAppearance="@style/TextAppearance.Material3.BodyMedium"
+                            android:textColor="@color/text_secondary" />
+
+                    </LinearLayout>
+
+                </com.google.android.material.card.MaterialCardView>
+
+            </LinearLayout>
+        </ScrollView>
+
+        <!-- Low-Profile, Non-Distracting Bottom Navigation Bar -->
         <LinearLayout
             android:id="@+id/navigation_controls"
-            style="?android:attr/buttonBarStyle"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_alignParentBottom="true"
-            android:background="?android:windowBackground"
+            android:background="@color/nav_bar_bg"
+            android:elevation="2dp"
+            android:gravity="center_vertical"
             android:orientation="horizontal"
-            android:padding="8dp">
+            android:paddingStart="12dp"
+            android:paddingTop="6dp"
+            android:paddingEnd="12dp"
+            android:paddingBottom="6dp">
 
-            <Button
+            <com.google.android.material.button.MaterialButton
                 android:id="@+id/prevButton"
-                style="?android:attr/buttonBarButtonStyle"
+                style="@style/Widget.Material3.Button.TextButton"
                 android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_marginEnd="4dp"
+                android:layout_height="40dp"
                 android:layout_weight="1"
-                android:text="@string/previous" />
+                android:text="@string/previous"
+                android:textColor="@color/nav_button_tint"
+                android:textSize="13sp"
+                app:cornerRadius="8dp"
+                app:icon="@drawable/ic_chevron_left"
+                app:iconSize="18dp"
+                app:iconTint="@color/nav_button_tint" />
 
-            <Button
+            <com.google.android.material.button.MaterialButton
                 android:id="@+id/nextButton"
-                style="?android:attr/buttonBarButtonStyle"
+                style="@style/Widget.Material3.Button.TextButton"
                 android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="4dp"
+                android:layout_height="40dp"
+                android:layout_marginStart="8dp"
                 android:layout_weight="1"
-                android:text="@string/next" />
+                android:text="@string/next"
+                android:textColor="@color/nav_button_tint"
+                android:textSize="13sp"
+                app:cornerRadius="8dp"
+                app:icon="@drawable/ic_chevron_right"
+                app:iconGravity="end"
+                app:iconSize="18dp"
+                app:iconTint="@color/nav_button_tint" />
+
         </LinearLayout>
+
     </RelativeLayout>
 
+    <!-- Primary Focal Point: Floating Record Control Panel -->
     <LinearLayout
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="bottom|end"
-        android:layout_marginBottom="100dp"
+        android:layout_marginEnd="16dp"
+        android:layout_marginBottom="64dp"
+        android:gravity="center_vertical"
         android:orientation="horizontal">
 
         <com.google.android.material.floatingactionbutton.FloatingActionButton
             android:id="@+id/fab_pause"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginStart="16dp"
-            android:layout_marginTop="16dp"
-            android:layout_marginBottom="16dp"
-            android:alpha="0.5"
+            android:layout_marginEnd="10dp"
+            android:contentDescription="@null"
             android:src="@drawable/ic_pause"
             android:visibility="gone"
-            app:backgroundTint="@color/design_default_color_secondary"
+            app:backgroundTint="@color/color_pause"
+            app:elevation="4dp"
             app:fabSize="mini"
-            app:layout_anchor="@id/fab_record"
-            app:layout_anchorGravity="start|center_vertical"
-            app:tint="@android:color/white"
-            tools:ignore="ContentDescription" />
+            app:tint="@android:color/white" />
 
+        <!-- Main Focal Record Button -->
         <com.google.android.material.floatingactionbutton.FloatingActionButton
             android:id="@+id/fab_record"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginStart="8dp"
-            android:layout_marginTop="16dp"
-            android:layout_marginEnd="16dp"
-            android:layout_marginBottom="16dp"
-            android:alpha="0.5"
+            android:contentDescription="@null"
             android:src="@drawable/ic_record"
-            app:backgroundTint="@color/design_default_color_primary"
-            app:tint="@android:color/white"
-            tools:ignore="ContentDescription" />
+            app:backgroundTint="@color/color_record"
+            app:elevation="8dp"
+            app:fabSize="normal"
+            app:tint="@android:color/white" />
 
     </LinearLayout>
 

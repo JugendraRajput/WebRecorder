@@ -4,10 +4,22 @@
         android:id="@+id/action_edit_current"
         android:title="@string/edit_current"
         android:icon="@drawable/ic_edit"
+        app:iconTint="@android:color/white"
+        app:showAsAction="ifRoom" />
+    <item
+        android:id="@+id/action_delete_entry"
+        android:title="@string/delete_entry"
+        android:icon="@drawable/ic_delete"
+        app:iconTint="@android:color/white"
         app:showAsAction="ifRoom" />
     <item
         android:id="@+id/action_select_file"
-        android:title="@string/select_excel_file"
+        android:title="@string/select_source"
         android:icon="@drawable/ic_files"
+        app:iconTint="@android:color/white"
         app:showAsAction="ifRoom" />
+    <item
+        android:id="@+id/action_sync"
+        android:title="@string/sync_settings"
+        app:showAsAction="never" />
 </menu>
