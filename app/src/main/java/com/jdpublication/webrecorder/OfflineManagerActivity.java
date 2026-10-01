@@ -99,7 +99,6 @@ public class OfflineManagerActivity extends AppCompatActivity {
             selectedFolder = initialFolder;
         }
 
-        loadFoldersAndFiles();
     }
 
     @Override
@@ -200,7 +199,11 @@ public class OfflineManagerActivity extends AppCompatActivity {
         });
     }
 
+    private final java.util.concurrent.atomic.AtomicInteger loadGeneration = new java.util.concurrent.atomic.AtomicInteger();
+
     private void loadFoldersAndFiles() {
+        final int generation = loadGeneration.incrementAndGet();
+        textCountSummary.setText("Scanning offline pages…");
         new Thread(() -> {
             List<String> folders = OfflineStore.listAllLocalFolders(this);
             List<OfflineFileItem> items = new ArrayList<>();
@@ -243,6 +246,7 @@ public class OfflineManagerActivity extends AppCompatActivity {
             int finalCorruptCount = corruptCount;
 
             mainHandler.post(() -> {
+                if (generation != loadGeneration.get() || isFinishing()) return;
                 allLoadedItems.clear();
                 allLoadedItems.addAll(items);
 
@@ -270,9 +274,15 @@ public class OfflineManagerActivity extends AppCompatActivity {
         displayLabels.add("All Folders (" + allLoadedItems.size() + " files)");
 
         int selectedIdx = 0;
+        java.util.Map<String, Integer> counts = new java.util.HashMap<>();
+        for (OfflineFileItem it : allLoadedItems) {
+            Integer c = counts.get(it.folderName);
+            counts.put(it.folderName, c == null ? 1 : c + 1);
+        }
         for (int i = 0; i < folders.size(); i++) {
             String f = folders.get(i);
-            int count = OfflineStore.countHtmlFiles(this, f);
+            Integer countObj = counts.get(f);
+            int count = countObj == null ? 0 : countObj;
             displayLabels.add(f + " (" + count + " files)");
             if (f.equals(selectedFolder)) {
                 selectedIdx = i + 1;
@@ -330,10 +340,11 @@ public class OfflineManagerActivity extends AppCompatActivity {
         buttonValidateAll.setEnabled(false);
         Toast.makeText(this, "Validating all offline files...", Toast.LENGTH_SHORT).show();
 
+        final List<OfflineFileItem> snapshot = new ArrayList<>(allLoadedItems);
         new Thread(() -> {
             int valid = 0, warn = 0, corrupt = 0;
-            for (int i = 0; i < allLoadedItems.size(); i++) {
-                OfflineFileItem item = allLoadedItems.get(i);
+            for (int i = 0; i < snapshot.size(); i++) {
+                OfflineFileItem item = snapshot.get(i);
                 OfflineStore.ValidationResult val = OfflineStore.validateOfflineFile(item.file);
                 item.validationResult = val;
                 if (val.isValid()) valid++;
@@ -341,7 +352,7 @@ public class OfflineManagerActivity extends AppCompatActivity {
                 else corrupt++;
 
                 int currentIdx = i + 1;
-                if (currentIdx % 20 == 0 || currentIdx == allLoadedItems.size()) {
+                if (currentIdx % 20 == 0 || currentIdx == snapshot.size()) {
                     mainHandler.post(() -> progressValidation.setProgress(currentIdx));
                 }
             }
@@ -381,16 +392,19 @@ public class OfflineManagerActivity extends AppCompatActivity {
         new AlertDialog.Builder(this)
                 .setTitle("Clean Corrupted Files")
                 .setMessage("Found " + corruptList.size() + " corrupted or 0-byte offline file(s).\n\nDo you want to permanently delete them?")
-                .setPositiveButton("Delete", (dialog, which) -> {
+                .setPositiveButton("Delete", (dialog, which) -> new Thread(() -> {
                     int deleted = 0;
                     for (OfflineFileItem item : corruptList) {
                         if (OfflineStore.deleteOfflineFile(this, item.folderName, item.file.getName())) {
                             deleted++;
                         }
                     }
-                    Toast.makeText(this, "Cleaned " + deleted + " corrupted file(s)", Toast.LENGTH_SHORT).show();
-                    loadFoldersAndFiles();
-                })
+                    int finalDeleted = deleted;
+                    mainHandler.post(() -> {
+                        Toast.makeText(this, "Cleaned " + finalDeleted + " corrupted file(s). They will also be removed from the cloud on the next sync.", Toast.LENGTH_LONG).show();
+                        loadFoldersAndFiles();
+                    });
+                }).start())
                 .setNegativeButton("Cancel", null)
                 .show();
     }
@@ -409,7 +423,7 @@ public class OfflineManagerActivity extends AppCompatActivity {
         Intent intent = new Intent(this, MainActivity.class);
         intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
         intent.putExtra("extra_folder_name", item.folderName);
-        intent.putExtra("extra_target_index", Math.max(item.rowIndex, 0));
+        intent.putExtra("extra_file_name", item.file.getName());
         startActivity(intent);
         finish();
     }

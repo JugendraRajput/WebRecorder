@@ -70,10 +70,9 @@ import java.util.regex.Pattern;
 public class BatchAutoProcessActivity extends AppCompatActivity {
 
     private static final String TAG = "BatchAutoProcess";
-    private static final Pattern UNWANTED_PATTERN = Pattern.compile(
-            "\\b(sex|sexy|porn|porno|xxx|adult|nude|nudity|abuse|abusive|erotic|erotica|hentai|rape|incest)\\b",
-            Pattern.CASE_INSENSITIVE
-    );
+    private static final long PAGE_TIMEOUT_MS = 30000L;
+    /** Disk work (metadata updates) off the UI thread. */
+    private final ExecutorService io = Executors.newSingleThreadExecutor();
 
     private TextView textHardware;
     private TextView textBenchmark;
@@ -202,6 +201,7 @@ public class BatchAutoProcessActivity extends AppCompatActivity {
         stopProcessing();
         cleanupWebViews();
         releaseWakeLock();
+        io.shutdown();
         super.onDestroy();
     }
 
@@ -240,7 +240,13 @@ public class BatchAutoProcessActivity extends AppCompatActivity {
         btnBenchmark.setOnClickListener(v -> runBenchmark());
         btnPickFolder.setOnClickListener(v -> openFolderPicker());
         btnPickExcel.setOnClickListener(v -> openSingleExcelPicker());
-        btnQuickLoadDevice.setOnClickListener(v -> scanDeviceExcelFolder());
+        btnQuickLoadDevice.setOnClickListener(v -> {
+            if (needsAllFilesAccess()) {
+                requestAllFilesAccess();
+            } else {
+                scanDeviceExcelFolder();
+            }
+        });
 
         btnStart.setOnClickListener(v -> {
             if (isRunning.get()) {
@@ -268,7 +274,34 @@ public class BatchAutoProcessActivity extends AppCompatActivity {
         });
     }
 
+    /** Android 11+ needs "All files access" to read .xlsx files from /sdcard/Movies/Excel directly. */
+    private boolean needsAllFilesAccess() {
+        return android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R && !Environment.isExternalStorageManager();
+    }
+
+    private void requestAllFilesAccess() {
+        new androidx.appcompat.app.AlertDialog.Builder(this)
+                .setTitle("Allow file access")
+                .setMessage("To auto-load the Excel sheets in /Movies/Excel, allow \"All files access\" for Web Recorder on the next screen, then come back.\n\nYou can also use \"Pick Folder\" or \"Pick Excel\" instead.")
+                .setPositiveButton("Open settings", (d, w) -> {
+                    try {
+                        Intent intent = new Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                                Uri.parse("package:" + getPackageName()));
+                        startActivity(intent);
+                    } catch (Exception e) {
+                        startActivity(new Intent(android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION));
+                    }
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
     private void checkQuickLoadAvailability() {
+        if (needsAllFilesAccess()) {
+            btnQuickLoadDevice.setVisibility(View.VISIBLE);
+            btnQuickLoadDevice.setText("⚡ Allow access to auto-load /Movies/Excel/");
+            return;
+        }
         File defaultExcelDir = new File("/sdcard/Movies/Excel/");
         if (!defaultExcelDir.exists()) {
             defaultExcelDir = new File(Environment.getExternalStorageDirectory(), "Movies/Excel");
@@ -656,7 +689,12 @@ public class BatchAutoProcessActivity extends AppCompatActivity {
         final boolean skipExisting;
         BatchItem currentItem;
         Runnable timeoutRunnable;
+        Runnable saveRunnable;
         int pagesProcessed = 0;
+        /** Changes for every task; callbacks carrying an old id are ignored. */
+        int taskId = 0;
+        boolean saving = false;
+        boolean mainFrameFailed = false;
 
         WebViewWorker(int workerId, long coolOffMs, boolean filterUnwanted, boolean skipExisting) {
             this.workerId = workerId;
@@ -665,23 +703,24 @@ public class BatchAutoProcessActivity extends AppCompatActivity {
             this.skipExisting = skipExisting;
 
             webView = new WebView(BatchAutoProcessActivity.this);
-            ViewGroup.LayoutParams lp = new ViewGroup.LayoutParams(1, 1);
+            ViewGroup.LayoutParams lp = new ViewGroup.LayoutParams(1080, 1920);
             webView.setLayoutParams(lp);
 
             WebSettings settings = webView.getSettings();
             settings.setJavaScriptEnabled(true);
             settings.setDomStorageEnabled(true);
-            settings.setDatabaseEnabled(true);
-            settings.setAllowFileAccess(true);
+            settings.setAllowFileAccess(false);
             settings.setLoadsImagesAutomatically(true);
             settings.setBlockNetworkImage(false);
+            settings.setUserAgentString("Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36");
 
             webView.setWebViewClient(new WebViewClient() {
                 @Override
                 public void onPageFinished(WebView view, String url) {
-                    if (!isRunning.get() || currentItem == null) return;
+                    if (!isRunning.get() || currentItem == null || saving || mainFrameFailed) return;
+                    if (url == null || url.startsWith("about:")) return;
+                    final int id = taskId;
 
-                    // Run lazy-load image trigger script (same as MainActivity)
                     String prepJs = "(function() {" +
                             "  try {" +
                             "    var imgs = document.querySelectorAll('img');" +
@@ -689,22 +728,37 @@ public class BatchAutoProcessActivity extends AppCompatActivity {
                             "      var img = imgs[i];" +
                             "      var lazyUrl = img.getAttribute('data-src') || img.getAttribute('data-original') || img.getAttribute('data-lazy-src') || img.getAttribute('data-url');" +
                             "      if (lazyUrl && !img.src) { img.src = lazyUrl; }" +
+                            "      img.loading = 'eager';" +
                             "    }" +
                             "  } catch(e){}" +
                             "})();";
                     view.evaluateJavascript(prepJs, null);
 
-                    // Wait cool-off period so all posters & images render into Chromium memory
-                    mainHandler.postDelayed(() -> {
-                        if (!isRunning.get() || currentItem == null) return;
-                        savePageArchive(view);
-                    }, coolOffMs);
+                    // Wait for the cool-off so posters & images finish rendering. A second
+                    // onPageFinished (redirect) simply restarts the wait instead of saving twice.
+                    if (saveRunnable != null) mainHandler.removeCallbacks(saveRunnable);
+                    saveRunnable = () -> {
+                        saveRunnable = null;
+                        if (!isRunning.get() || id != taskId || saving || currentItem == null) return;
+                        savePageArchive(view, id);
+                    };
+                    mainHandler.postDelayed(saveRunnable, coolOffMs);
                 }
 
                 @Override
                 public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
                     if (request.isForMainFrame()) {
+                        mainFrameFailed = true;
                         Log.w(TAG, "WebView worker #" + workerId + " error: " + error.getDescription());
+                        finishTask(taskId, false, "network error: " + error.getDescription());
+                    }
+                }
+
+                @Override
+                public void onReceivedHttpError(WebView view, WebResourceRequest request, android.webkit.WebResourceResponse errorResponse) {
+                    if (request.isForMainFrame() && errorResponse != null && errorResponse.getStatusCode() >= 400) {
+                        mainFrameFailed = true;
+                        finishTask(taskId, false, "HTTP " + errorResponse.getStatusCode());
                     }
                 }
             });
@@ -718,69 +772,98 @@ public class BatchAutoProcessActivity extends AppCompatActivity {
                 return;
             }
 
-            BatchItem item;
-            synchronized (webViewQueue) {
-                item = webViewQueue.poll();
-            }
-
-            if (item == null) {
-                checkAllWorkersFinished();
-                return;
-            }
-
-            currentItem = item;
-            String title = item.title;
-            String url = item.webUrl;
-            String targetFolder = item.targetFolderName;
-
-            // 1. Filter unwanted words
-            if (filterUnwanted && isUnwanted(title)) {
-                skippedCounter.incrementAndGet();
-                completedCounter.incrementAndGet();
-                updateStatsUi();
-                appendLog("  [Filter] Skipped: \"" + title + "\"");
-                startNextTask();
-                return;
-            }
-
-            // 2. Skip existing
-            File targetDir = OfflineStore.getFolderDirectory(BatchAutoProcessActivity.this, targetFolder);
-            String mhtName = OfflineStore.buildOfflineFileName(url);
-            File destinationMht = new File(targetDir, mhtName);
-
-            if (skipExisting && destinationMht.exists() && destinationMht.length() > 1024) {
-                skippedCounter.incrementAndGet();
-                completedCounter.incrementAndGet();
-                OfflineStore.upsertMetadataEntry(BatchAutoProcessActivity.this, targetFolder, mhtName, url, title, item.rowIndex);
-                updateStatsUi();
-                appendLog("  [Skip] Already offline: \"" + title + "\" (" + targetFolder + ")");
-                startNextTask();
-                return;
-            }
-
-            activeThreads.incrementAndGet();
-            updateStatsUi();
-            appendLog(String.format(Locale.US, "  🌐 [Worker #%d] Loading: \"%s\" [%s]", workerId, title, targetFolder));
-
-            // Set 25-second timeout in case Wikipedia hangs
-            if (timeoutRunnable != null) mainHandler.removeCallbacks(timeoutRunnable);
-            timeoutRunnable = () -> {
-                if (currentItem == item && isRunning.get()) {
-                    failedCounter.incrementAndGet();
-                    completedCounter.incrementAndGet();
-                    activeThreads.decrementAndGet();
-                    updateStatsUi();
-                    appendLog("  ⚠️ [Timeout] Worker #" + workerId + " timed out on: \"" + title + "\"");
-                    startNextTask();
+            // Skips are handled in a loop (not recursion) so thousands of existing pages are fine.
+            while (true) {
+                BatchItem item;
+                synchronized (webViewQueue) {
+                    item = webViewQueue.poll();
                 }
-            };
-            mainHandler.postDelayed(timeoutRunnable, 25000);
+                if (item == null) {
+                    currentItem = null;
+                    checkAllWorkersFinished();
+                    return;
+                }
+                String title = item.title;
+                String url = item.webUrl;
+                String targetFolder = item.targetFolderName;
 
-            webView.loadUrl(url);
+                if (filterUnwanted && isUnwanted(title)) {
+                    skippedCounter.incrementAndGet();
+                    completedCounter.incrementAndGet();
+                    updateStatsUi();
+                    appendLog("  [Filter] Skipped: \"" + title + "\"");
+                    continue;
+                }
+
+                File targetDir = OfflineStore.getFolderDirectory(BatchAutoProcessActivity.this, targetFolder);
+                String mhtName = OfflineStore.buildOfflineFileName(url);
+                File destinationMht = new File(targetDir, mhtName);
+                if (skipExisting && destinationMht.exists() && destinationMht.length() > 1024) {
+                    skippedCounter.incrementAndGet();
+                    completedCounter.incrementAndGet();
+                    io.execute(() -> OfflineStore.upsertMetadataEntry(BatchAutoProcessActivity.this, targetFolder, mhtName, url, title, item.rowIndex));
+                    updateStatsUi();
+                    appendLog("  [Skip] Already offline: \"" + title + "\" (" + targetFolder + ")");
+                    continue;
+                }
+
+                currentItem = item;
+                taskId++;
+                saving = false;
+                mainFrameFailed = false;
+                final int id = taskId;
+                activeThreads.incrementAndGet();
+                updateStatsUi();
+                appendLog(String.format(Locale.US, "  🌐 [Worker #%d] Loading: \"%s\" [%s]", workerId, title, targetFolder));
+
+                if (timeoutRunnable != null) mainHandler.removeCallbacks(timeoutRunnable);
+                timeoutRunnable = () -> {
+                    if (id == taskId && !saving) {
+                        finishTask(id, false, "timed out");
+                    }
+                };
+                mainHandler.postDelayed(timeoutRunnable, PAGE_TIMEOUT_MS + coolOffMs);
+                webView.loadUrl(url);
+                return;
+            }
         }
 
-        private void savePageArchive(WebView view) {
-            if (currentItem == null) return;
+        /** Completes the current task exactly once and moves on. */
+        void finishTask(int id, boolean saved, String reason) {
+            if (id != taskId || currentItem == null) return;
+            BatchItem item = currentItem;
+            currentItem = null;
+            taskId++; // invalidate any late callbacks for this page
+            if (timeoutRunnable != null) mainHandler.removeCallbacks(timeoutRunnable);
+            if (saveRunnable != null) mainHandler.removeCallbacks(saveRunnable);
+            activeThreads.decrementAndGet();
+            completedCounter.incrementAndGet();
+            if (saved) {
+                savedCounter.incrementAndGet();
+            } else {
+                failedCounter.incrementAndGet();
+                appendLog("  ❌ [Failed] Worker #" + workerId + ": \"" + item.title + "\" (" + reason + ")");
+            }
+            updateStatsUi();
+            try {
+                webView.stopLoading();
+                webView.loadUrl("about:blank");
+            } catch (Exception ignored) {
+            }
+            pagesProcessed++;
+            if (pagesProcessed % 20 == 0) {
+                try {
+                    webView.clearCache(true);
+                    webView.clearHistory();
+                } catch (Exception ignored) {
+                }
+            }
+            mainHandler.post(this::startNextTask);
+        }
+
+        private void savePageArchive(WebView view, int id) {
+            if (currentItem == null || id != taskId) return;
+            saving = true;
             BatchItem item = currentItem;
             String title = item.title;
             String url = item.webUrl;
@@ -790,46 +873,53 @@ public class BatchAutoProcessActivity extends AppCompatActivity {
             if (!targetDir.exists()) targetDir.mkdirs();
             String mhtName = OfflineStore.buildOfflineFileName(url);
             File destinationMht = new File(targetDir, mhtName);
+            File tempMht = new File(targetDir, mhtName + ".saving" + workerId);
 
-            // Execute exact same saveWebArchive as MainActivity
-            view.saveWebArchive(destinationMht.getAbsolutePath(), false, savedPath -> {
-                if (timeoutRunnable != null) mainHandler.removeCallbacks(timeoutRunnable);
-                activeThreads.decrementAndGet();
-                completedCounter.incrementAndGet();
-
-                if (savedPath != null && !savedPath.trim().isEmpty() && destinationMht.exists() && destinationMht.length() > 1024) {
-                    savedCounter.incrementAndGet();
-                    OfflineStore.upsertMetadataEntry(BatchAutoProcessActivity.this, targetFolder, mhtName, url, title, item.rowIndex);
-                    appendLog(String.format(Locale.US, "  ✅ [Saved MHT] Worker #%d: \"%s\" [%s] -> %s (with all images)",
-                            workerId, title, targetFolder, OfflineStore.formatFileSize(destinationMht.length())));
-                } else {
-                    failedCounter.incrementAndGet();
-                    appendLog("  ❌ [Save Failed] Worker #" + workerId + ": \"" + title + "\"");
+            view.saveWebArchive(tempMht.getAbsolutePath(), false, savedPath -> {
+                if (id != taskId) {
+                    //noinspection ResultOfMethodCallIgnored
+                    tempMht.delete();
+                    return;
                 }
-
-                updateStatsUi();
-                currentItem = null;
-                pagesProcessed++;
-                if (pagesProcessed % 20 == 0) {
-                    try {
-                        view.clearCache(true);
-                        view.clearHistory();
-                    } catch (Exception ignored) {
+                boolean ok = savedPath != null && !savedPath.trim().isEmpty() && tempMht.length() > 1024;
+                if (ok) {
+                    if (destinationMht.exists()) {
+                        //noinspection ResultOfMethodCallIgnored
+                        destinationMht.delete();
                     }
+                    ok = tempMht.renameTo(destinationMht);
                 }
-                startNextTask();
+                if (ok) {
+                    long size = destinationMht.length();
+                    io.execute(() -> OfflineStore.upsertMetadataEntry(BatchAutoProcessActivity.this, targetFolder, mhtName, url, title, item.rowIndex));
+                    appendLog(String.format(Locale.US, "  ✅ [Saved] Worker #%d: \"%s\" [%s] → %s",
+                            workerId, title, targetFolder, OfflineStore.formatFileSize(size)));
+                    finishTask(id, true, null);
+                } else {
+                    //noinspection ResultOfMethodCallIgnored
+                    tempMht.delete();
+                    finishTask(id, false, "could not save archive");
+                }
             });
         }
     }
 
     private void checkAllWorkersFinished() {
-        if (completedCounter.get() >= currentBatchItems.size() && isRunning.get()) {
+        if (!isRunning.get()) return;
+        for (WebViewWorker w : webViewWorkers) {
+            if (w.currentItem != null) return; // someone is still working
+        }
+        boolean queueEmpty;
+        synchronized (webViewQueue) {
+            queueEmpty = webViewQueue.isEmpty();
+        }
+        if (queueEmpty) {
             onBatchExecutionFinished("Native MHT Engine");
         }
     }
 
     private void onBatchExecutionFinished(String engineName) {
-        stopProcessing();
+        stopProcessing(false);
         int batchCount = currentBatchItems.size();
         if (batchCount > 0 && batchCount <= pendingBatchItems.size()) {
             pendingBatchItems.subList(0, batchCount).clear();
@@ -1029,9 +1119,8 @@ public class BatchAutoProcessActivity extends AppCompatActivity {
                 html = html.substring(0, headIdx + 6) + baseTag + metaVp + html.substring(headIdx + 6);
             }
 
-            try (FileOutputStream fos = new FileOutputStream(destinationFile)) {
-                fos.write(html.getBytes(StandardCharsets.UTF_8));
-                fos.flush();
+            if (!OfflineStore.writeAtomically(destinationFile, html.getBytes(StandardCharsets.UTF_8))) {
+                return false;
             }
 
             OfflineStore.upsertMetadataEntry(this, targetFolder, destinationFile.getName(), pageUrl, title, rowIndex);
@@ -1280,6 +1369,10 @@ public class BatchAutoProcessActivity extends AppCompatActivity {
     }
 
     private void stopProcessing() {
+        stopProcessing(true);
+    }
+
+    private void stopProcessing(boolean byUser) {
         if (!isRunning.get()) return;
         isRunning.set(false);
         isPaused.set(false);
@@ -1294,8 +1387,9 @@ public class BatchAutoProcessActivity extends AppCompatActivity {
         btnPause.setEnabled(false);
         btnPause.setText("Pause");
         releaseWakeLock();
+        getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
-        appendLog("[Control] Processing stopped by user.");
+        if (byUser) appendLog("[Control] Processing stopped by user.");
     }
 
     private void togglePause() {
@@ -1317,8 +1411,7 @@ public class BatchAutoProcessActivity extends AppCompatActivity {
     }
 
     private boolean isUnwanted(String title) {
-        if (title == null || title.trim().isEmpty()) return false;
-        return UNWANTED_PATTERN.matcher(title).find();
+        return ContentFilter.isUnwanted(title);
     }
 
     private void updateStatsUi() {

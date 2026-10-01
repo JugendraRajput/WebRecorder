@@ -11,6 +11,11 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.pm.ServiceInfo;
+import android.app.PendingIntent;
+import android.media.MediaCodecInfo;
+import android.media.MediaCodecList;
+import android.media.MediaFormat;
+import android.os.Build;
 import android.hardware.display.DisplayManager;
 import android.hardware.display.VirtualDisplay;
 import android.media.MediaRecorder;
@@ -39,6 +44,9 @@ public class RecordingService extends Service {
     public static final String ACTION_RECORDING_ERROR = "com.jdpublication.webrecorder.RECORDING_ERROR";
     public static final String ACTION_PAUSE = "com.jdpublication.webrecorder.PAUSE";
     public static final String ACTION_RESUME = "com.jdpublication.webrecorder.RESUME";
+    public static final String ACTION_STOP = "com.jdpublication.webrecorder.STOP";
+    private static final int NOTIFICATION_ID = 1;
+    private static final long MIN_RECORDING_MS = 1500L;
     public static final String EXTRA_MESSAGE = "message";
 
     private static final String CHANNEL_ID = "RecordingServiceChannel";
@@ -51,6 +59,8 @@ public class RecordingService extends Service {
     private int screenHeight;
     private MediaProjection.Callback mediaProjectionCallback;
     private ParcelFileDescriptor outputFileDescriptor;
+    private Uri videoUri;
+    private String currentTitle = "";
 
     public static boolean isRecording = false;
     public static boolean isPaused = false;
@@ -73,22 +83,28 @@ public class RecordingService extends Service {
         if (action != null) {
             switch (action) {
                 case ACTION_PAUSE:
+                    if (!isRecording) { stopSelf(); return START_NOT_STICKY; }
                     pauseRecording();
-                    return START_STICKY;
+                    return START_NOT_STICKY;
                 case ACTION_RESUME:
+                    if (!isRecording) { stopSelf(); return START_NOT_STICKY; }
                     resumeRecording();
-                    return START_STICKY;
+                    return START_NOT_STICKY;
+                case ACTION_STOP:
+                    stopSelf();
+                    return START_NOT_STICKY;
             }
         }
 
         Log.d(TAG, "onStartCommand received for starting");
         // Start Foreground Service
-        Notification notification = new NotificationCompat.Builder(this, CHANNEL_ID).setContentTitle("Screen Recording").setContentText("Recording in progress...").setSmallIcon(R.drawable.ic_record).build();
+        currentTitle = intent.getStringExtra("filename") == null ? "" : intent.getStringExtra("filename");
+        Notification notification = buildNotification(false);
         int foregroundServiceType = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION;
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
             foregroundServiceType |= ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE;
         }
-        ServiceCompat.startForeground(this, 1, notification, foregroundServiceType);
+        ServiceCompat.startForeground(this, NOTIFICATION_ID, notification, foregroundServiceType);
 
         // Extract data from intent
         int resultCode = intent.getIntExtra("resultCode", -1);
@@ -147,6 +163,7 @@ public class RecordingService extends Service {
             try {
                 mediaRecorder.pause();
                 isPaused = true;
+                updateNotification();
                 broadcastState(ACTION_RECORDING_PAUSED);
             } catch (IllegalStateException e) {
                 Log.e(TAG, "Failed to pause MediaRecorder", e);
@@ -159,6 +176,7 @@ public class RecordingService extends Service {
             try {
                 mediaRecorder.resume();
                 isPaused = false;
+                updateNotification();
                 broadcastState(ACTION_RECORDING_RESUMED);
             } catch (IllegalStateException e) {
                 Log.e(TAG, "Failed to resume MediaRecorder", e);
@@ -169,80 +187,161 @@ public class RecordingService extends Service {
     private boolean initRecorder(String filename) {
 
         mediaRecorder = new MediaRecorder();
-        Uri videoUri = null;
+        videoUri = null;
 
         try {
-
             DisplayMetrics metrics = getResources().getDisplayMetrics();
-            screenWidth = metrics.widthPixels;
-            screenHeight = metrics.heightPixels;
+            int[] size = pickVideoSize(metrics.widthPixels, metrics.heightPixels);
+            screenWidth = size[0];
+            screenHeight = size[1];
 
             int frameRate = 30;
-            int bitRate = 6 * 1000 * 1000;
+            int bitRate = Math.max(4_000_000, Math.min(12_000_000, screenWidth * screenHeight * 4));
+            boolean withAudio = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED;
 
-            // 1️⃣ Sources FIRST
-            if (checkSelfPermission(Manifest.permission.RECORD_AUDIO)
-                    == PackageManager.PERMISSION_GRANTED) {
+            // Order matters: sources → output format → encoders → sizes → output file.
+            if (withAudio) {
                 mediaRecorder.setAudioSource(MediaRecorder.AudioSource.MIC);
             }
-
             mediaRecorder.setVideoSource(MediaRecorder.VideoSource.SURFACE);
-
-            // 2️⃣ Output format BEFORE encoders
             mediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
-
-            // 3️⃣ Encoders AFTER output format
-            if (checkSelfPermission(Manifest.permission.RECORD_AUDIO)
-                    == PackageManager.PERMISSION_GRANTED) {
-
+            if (withAudio) {
                 mediaRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
                 mediaRecorder.setAudioEncodingBitRate(128000);
                 mediaRecorder.setAudioSamplingRate(44100);
             }
-
             mediaRecorder.setVideoEncoder(MediaRecorder.VideoEncoder.H264);
-
-            // 4️⃣ Video config
             mediaRecorder.setVideoSize(screenWidth, screenHeight);
             mediaRecorder.setVideoFrameRate(frameRate);
             mediaRecorder.setVideoEncodingBitRate(bitRate);
 
-            // 5️⃣ File
             ContentResolver resolver = getContentResolver();
             ContentValues values = new ContentValues();
-            values.put(MediaStore.Video.Media.RELATIVE_PATH,
-                    Environment.DIRECTORY_MOVIES + "/WebRecordings");
-            values.put(MediaStore.Video.Media.DISPLAY_NAME, filename + ".mp4");
+            values.put(MediaStore.Video.Media.DISPLAY_NAME, safeFileName(filename) + ".mp4");
             values.put(MediaStore.Video.Media.MIME_TYPE, "video/mp4");
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                values.put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/WebRecordings");
+                values.put(MediaStore.Video.Media.IS_PENDING, 1); // hidden from the gallery until finished
+            }
 
-            videoUri = resolver.insert(
-                    MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values);
-
+            videoUri = resolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values);
             if (videoUri == null) return false;
 
             outputFileDescriptor = resolver.openFileDescriptor(videoUri, "w");
             if (outputFileDescriptor == null) {
                 return false;
             }
-
             mediaRecorder.setOutputFile(outputFileDescriptor.getFileDescriptor());
-
             mediaRecorder.prepare();
-
+            Log.d(TAG, "Recorder ready " + screenWidth + "x" + screenHeight + " @" + bitRate + "bps audio=" + withAudio);
             return true;
 
         } catch (Exception e) {
-
             Log.e(TAG, "Recorder init failed", e);
-
-            if (videoUri != null)
-                getContentResolver().delete(videoUri, null, null);
-
-            if (mediaRecorder != null)
-                mediaRecorder.release();
-
+            discardOutput();
+            if (mediaRecorder != null) mediaRecorder.release();
             mediaRecorder = null;
             return false;
+        }
+    }
+
+    /** Even dimensions the device's H.264 encoder supports, keeping the screen aspect ratio. */
+    private static int[] pickVideoSize(int width, int height) {
+        int w = width & ~1;
+        int h = height & ~1;
+        MediaCodecInfo.VideoCapabilities caps = null;
+        try {
+            MediaCodecList list = new MediaCodecList(MediaCodecList.REGULAR_CODECS);
+            for (MediaCodecInfo info : list.getCodecInfos()) {
+                if (!info.isEncoder()) continue;
+                for (String type : info.getSupportedTypes()) {
+                    if (MediaFormat.MIMETYPE_VIDEO_AVC.equalsIgnoreCase(type)) {
+                        caps = info.getCapabilitiesForType(type).getVideoCapabilities();
+                        break;
+                    }
+                }
+                if (caps != null) break;
+            }
+        } catch (Exception ignored) {
+        }
+        if (caps == null) {
+            // Unknown encoder limits: stay within 1080p which every device supports.
+            double scale = Math.min(1.0, 1920.0 / Math.max(w, h));
+            return new int[]{((int) (w * scale)) & ~15, ((int) (h * scale)) & ~15};
+        }
+        double scale = 1.0;
+        for (int i = 0; i < 20; i++) {
+            int cw = ((int) (w * scale)) & ~15;
+            int ch = ((int) (h * scale)) & ~15;
+            if (cw > 0 && ch > 0 && caps.isSizeSupported(cw, ch)) {
+                return new int[]{cw, ch};
+            }
+            scale *= 0.9;
+        }
+        return new int[]{720, 1280};
+    }
+
+    private static String safeFileName(String name) {
+        String clean = name == null ? "" : name.replaceAll("[\\\\/:*?\"<>|\\p{Cntrl}]", " ").replaceAll("\\s+", " ").trim();
+        if (clean.isEmpty()) clean = "Recording";
+        if (clean.length() > 120) clean = clean.substring(0, 120).trim();
+        return clean;
+    }
+
+    private void discardOutput() {
+        try {
+            if (outputFileDescriptor != null) {
+                outputFileDescriptor.close();
+                outputFileDescriptor = null;
+            }
+        } catch (Exception ignored) {
+        }
+        if (videoUri != null) {
+            try {
+                getContentResolver().delete(videoUri, null, null);
+            } catch (Exception ignored) {
+            }
+            videoUri = null;
+        }
+    }
+
+    private void publishOutput() {
+        if (videoUri == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return;
+        try {
+            ContentValues values = new ContentValues();
+            values.put(MediaStore.Video.Media.IS_PENDING, 0);
+            getContentResolver().update(videoUri, values, null, null);
+        } catch (Exception e) {
+            Log.w(TAG, "Could not publish recording", e);
+        }
+    }
+
+    private Notification buildNotification(boolean paused) {
+        Intent open = new Intent(this, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        PendingIntent openPi = PendingIntent.getActivity(this, 10, open, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+        Intent toggle = new Intent(this, RecordingService.class).setAction(paused ? ACTION_RESUME : ACTION_PAUSE);
+        PendingIntent togglePi = PendingIntent.getService(this, 11, toggle, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+        Intent stop = new Intent(this, RecordingService.class).setAction(ACTION_STOP);
+        PendingIntent stopPi = PendingIntent.getService(this, 12, stop, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+        return new NotificationCompat.Builder(this, CHANNEL_ID)
+                .setContentTitle(paused ? "Recording paused" : "Recording screen")
+                .setContentText(currentTitle.isEmpty() ? "Web Recorder" : currentTitle)
+                .setSmallIcon(R.drawable.ic_record)
+                .setOngoing(true)
+                .setOnlyAlertOnce(true)
+                .setContentIntent(openPi)
+                .addAction(paused ? R.drawable.ic_play : R.drawable.ic_pause, paused ? "Resume" : "Pause", togglePi)
+                .addAction(R.drawable.ic_stop, "Stop", stopPi)
+                .build();
+    }
+
+    private void updateNotification() {
+        NotificationManager nm = getSystemService(NotificationManager.class);
+        if (nm != null) {
+            try {
+                nm.notify(NOTIFICATION_ID, buildNotification(isPaused));
+            } catch (SecurityException ignored) {
+            }
         }
     }
 
@@ -255,51 +354,76 @@ public class RecordingService extends Service {
     public void onDestroy() {
         super.onDestroy();
 
+        boolean wasRecording = recorderStarted;
         isRecording = false;
         isPaused = false;
+        String message = null;
 
         try {
             if (virtualDisplay != null) {
                 virtualDisplay.release();
                 virtualDisplay = null;
             }
+        } catch (Exception e) {
+            Log.e(TAG, "virtual display release", e);
+        }
 
-            if (mediaRecorder != null && recorderStarted) {
-
+        boolean keepFile = false;
+        if (mediaRecorder != null) {
+            if (recorderStarted) {
                 long duration = System.currentTimeMillis() - recordingStartTime;
-
-                if (duration > 1000) {
-                    mediaRecorder.stop();
+                try {
+                    if (duration >= MIN_RECORDING_MS) {
+                        mediaRecorder.stop();
+                        keepFile = true;
+                    }
+                } catch (RuntimeException e) {
+                    // stop() throws when no frames were captured; the file is unusable.
+                    Log.e(TAG, "MediaRecorder.stop failed", e);
                 }
-
+            }
+            try {
                 mediaRecorder.reset();
                 mediaRecorder.release();
+            } catch (Exception ignored) {
             }
+            mediaRecorder = null;
+        }
 
+        try {
             if (outputFileDescriptor != null) {
                 outputFileDescriptor.close();
                 outputFileDescriptor = null;
             }
+        } catch (Exception ignored) {
+        }
 
-        } catch (Exception e) {
-            Log.e(TAG, "Safe stop error", e);
+        if (keepFile) {
+            publishOutput();
+            message = getString(R.string.recording_saved);
+        } else {
+            discardOutput();
+            if (wasRecording) message = getString(R.string.recording_too_short);
         }
 
         if (mediaProjection != null) {
-            if (mediaProjectionCallback != null)
-                mediaProjection.unregisterCallback(mediaProjectionCallback);
-
-            mediaProjection.stop();
+            try {
+                if (mediaProjectionCallback != null) mediaProjection.unregisterCallback(mediaProjectionCallback);
+                mediaProjection.stop();
+            } catch (Exception ignored) {
+            }
+            mediaProjection = null;
         }
 
-        stopForeground(true);
+        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE);
 
         Intent intent = new Intent(ACTION_RECORDING_STOPPED);
+        if (message != null) intent.putExtra(EXTRA_MESSAGE, message);
         LocalBroadcastManager.getInstance(this).sendBroadcast(intent);
     }
 
     private void createNotificationChannel() {
-        NotificationChannel channel = new NotificationChannel(CHANNEL_ID, "Recording Service Channel", NotificationManager.IMPORTANCE_DEFAULT);
+        NotificationChannel channel = new NotificationChannel(CHANNEL_ID, "Screen recording", NotificationManager.IMPORTANCE_LOW);
         getSystemService(NotificationManager.class).createNotificationChannel(channel);
     }
 

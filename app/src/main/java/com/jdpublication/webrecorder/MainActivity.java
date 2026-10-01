@@ -1,63 +1,3 @@
-/*
- * Decompiled with CFR 0.152.
- * 
- * Could not load the following classes:
- *  android.app.Activity
- *  android.content.BroadcastReceiver
- *  android.content.Context
- *  android.content.Intent
- *  android.content.IntentFilter
- *  android.content.UriPermission
- *  android.media.projection.MediaProjectionManager
- *  android.net.Uri
- *  android.os.Build$VERSION
- *  android.os.Bundle
- *  android.os.Handler
- *  android.os.Looper
- *  android.os.ParcelFileDescriptor
- *  android.os.Parcelable
- *  android.util.Base64
- *  android.util.Log
- *  android.view.LayoutInflater
- *  android.view.Menu
- *  android.view.MenuItem
- *  android.view.View
- *  android.webkit.WebView
- *  android.webkit.WebViewClient
- *  android.widget.Button
- *  android.widget.EditText
- *  android.widget.TextView
- *  android.widget.Toast
- *  androidx.activity.OnBackPressedCallback
- *  androidx.activity.result.ActivityResultLauncher
- *  androidx.activity.result.contract.ActivityResultContract
- *  androidx.activity.result.contract.ActivityResultContracts$StartActivityForResult
- *  androidx.annotation.NonNull
- *  androidx.appcompat.app.ActionBar
- *  androidx.appcompat.app.AlertDialog
- *  androidx.appcompat.app.AlertDialog$Builder
- *  androidx.appcompat.app.AppCompatActivity
- *  androidx.appcompat.widget.Toolbar
- *  androidx.core.app.ActivityCompat
- *  androidx.core.content.ContextCompat
- *  androidx.lifecycle.LifecycleOwner
- *  androidx.localbroadcastmanager.content.LocalBroadcastManager
- *  com.google.android.material.floatingactionbutton.FloatingActionButton
- *  com.jdpublication.webrecorder.R$drawable
- *  com.jdpublication.webrecorder.R$id
- *  com.jdpublication.webrecorder.R$layout
- *  com.jdpublication.webrecorder.R$menu
- *  com.jdpublication.webrecorder.R$string
- *  org.apache.poi.ss.usermodel.Cell
- *  org.apache.poi.ss.usermodel.DataFormatter
- *  org.apache.poi.ss.usermodel.Row
- *  org.apache.poi.ss.usermodel.Sheet
- *  org.apache.poi.ss.usermodel.Workbook
- *  org.apache.poi.ss.usermodel.WorkbookFactory
- *  org.json.JSONArray
- *  org.json.JSONObject
- *  org.json.JSONTokener
- */
 package com.jdpublication.webrecorder;
 
 import android.app.Activity;
@@ -170,6 +110,16 @@ extends AppCompatActivity {
     private boolean isLoadedFromExcel = true;
     private boolean currentPageLoadedOffline = false;
     private PendingOfflineSave pendingOfflineSave;
+    /** Incremented on every navigation so late callbacks for an old page are ignored. */
+    private int navigationGeneration = 0;
+    private boolean mainFrameFailed = false;
+    private Runnable pendingSaveRunnable;
+    private String pendingRestoreFileName;
+    private boolean audioPermissionRequested = false;
+    /** Serial executor for disk work (Excel writes, metadata, large offline files). */
+    private final java.util.concurrent.ExecutorService io = java.util.concurrent.Executors.newSingleThreadExecutor();
+    /** Separate thread for reading big offline pages so Excel writes never delay page display. */
+    private final java.util.concurrent.ExecutorService pageLoader = java.util.concurrent.Executors.newSingleThreadExecutor();
     private final ActivityResultLauncher<Intent> filePickerLauncher = this.registerForActivityResult(new ActivityResultContracts.StartActivityForResult(), result -> {
         if (result.getResultCode() == -1 && result.getData() != null) {
             this.handleSelectedExcelFile(result.getData());
@@ -218,6 +168,11 @@ extends AppCompatActivity {
                 case "com.jdpublication.webrecorder.RECORDING_STOPPED": {
                     MainActivity.this.isStartingRecording = false;
                     MainActivity.this.onRecordingStopped();
+                    String stoppedMessage = intent.getStringExtra("message");
+                    if (stoppedMessage != null && !stoppedMessage.isEmpty()) {
+                        Toast.makeText(MainActivity.this, stoppedMessage, Toast.LENGTH_SHORT).show();
+                    }
+                    break;
                 }
             }
         }
@@ -260,27 +215,33 @@ extends AppCompatActivity {
         });
         this.updateUiForRecordingState();
 
-        Intent initialIntent = this.getIntent();
-        if (initialIntent != null) {
-            String extraFolder = initialIntent.getStringExtra("extra_folder_name");
-            if (extraFolder != null && !extraFolder.isEmpty()) {
-                int extraIndex = initialIntent.getIntExtra("extra_target_index", 0);
-                this.loadDownloadedFolder(extraFolder, extraIndex);
-            }
+        this.handleOpenFolderIntent(this.getIntent());
+    }
+
+    /** Opens a folder (and optionally a specific page) requested by the Offline Manager / Viewer. */
+    private void handleOpenFolderIntent(Intent intent) {
+        if (intent == null) {
+            return;
         }
+        String extraFolder = intent.getStringExtra("extra_folder_name");
+        if (extraFolder == null || extraFolder.isEmpty()) {
+            return;
+        }
+        if (this.isRecording) {
+            Toast.makeText(this, "Stop the recording before opening another page.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        this.pendingRestoreFileName = intent.getStringExtra("extra_file_name");
+        int extraIndex = intent.getIntExtra("extra_target_index", 0);
+        this.loadDownloadedFolder(extraFolder, extraIndex);
+        intent.removeExtra("extra_folder_name");
     }
 
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         this.setIntent(intent);
-        if (intent != null) {
-            String extraFolder = intent.getStringExtra("extra_folder_name");
-            if (extraFolder != null && !extraFolder.isEmpty()) {
-                int extraIndex = intent.getIntExtra("extra_target_index", 0);
-                this.loadDownloadedFolder(extraFolder, extraIndex);
-            }
-        }
+        this.handleOpenFolderIntent(intent);
     }
 
     protected void onResume() {
@@ -296,7 +257,16 @@ extends AppCompatActivity {
 
     protected void onDestroy() {
         this.handler.removeCallbacks(this.runnable);
+        if (this.pendingSaveRunnable != null) {
+            this.handler.removeCallbacks(this.pendingSaveRunnable);
+        }
         LocalBroadcastManager.getInstance((Context)this).unregisterReceiver(this.recordingStateReceiver);
+        this.io.shutdown();
+        this.pageLoader.shutdownNow();
+        if (this.webView != null) {
+            this.webView.stopLoading();
+            this.webView.destroy();
+        }
         super.onDestroy();
     }
 
@@ -346,15 +316,45 @@ extends AppCompatActivity {
         this.webView.getSettings().setCacheMode(1);
         this.webView.setWebViewClient(new WebViewClient(){
 
+            @Override
+            public void onReceivedError(WebView view, android.webkit.WebResourceRequest request, android.webkit.WebResourceError error) {
+                if (request != null && request.isForMainFrame()) {
+                    MainActivity.this.mainFrameFailed = true;
+                    MainActivity.this.pendingOfflineSave = null;
+                    String reason = error != null && error.getDescription() != null ? error.getDescription().toString() : "";
+                    String safeReason = reason.replace("<", "&lt;").replace(">", "&gt;");
+                    String html = "<html><head><meta name='viewport' content='width=device-width,initial-scale=1'></head>"
+                            + "<body style='font-family:sans-serif;text-align:center;padding:48px 24px;color:#334155;'>"
+                            + "<h2 style='color:#e11d48;'>Page not available offline</h2>"
+                            + "<p>This page has not been saved on this device yet and it could not be loaded.</p>"
+                            + "<p style='color:#94a3b8;font-size:13px;'>" + safeReason + "</p>"
+                            + "<p>Connect to the internet once to save it, or download this folder with <b>Cloud Sync</b>.</p></body></html>";
+                    view.loadDataWithBaseURL("about:offline", html, "text/html", "UTF-8", null);
+                }
+            }
+
+            @Override
+            public void onReceivedHttpError(WebView view, android.webkit.WebResourceRequest request, android.webkit.WebResourceResponse errorResponse) {
+                if (request != null && request.isForMainFrame() && errorResponse != null && errorResponse.getStatusCode() >= 400) {
+                    MainActivity.this.mainFrameFailed = true;
+                }
+            }
+
             public void onPageFinished(WebView view, String url) {
                 if (MainActivity.this.isLoadedFromExcel) {
                     view.clearHistory();
                 }
                 MainActivity.this.isLoadedFromExcel = false;
-                if (!MainActivity.this.currentPageLoadedOffline && MainActivity.this.pendingOfflineSave != null) {
-                    PendingOfflineSave save = MainActivity.this.pendingOfflineSave;
-                    MainActivity.this.pendingOfflineSave = null;
-                    MainActivity.this.scheduleOfflinePageSave(save, url);
+                PendingOfflineSave save = MainActivity.this.pendingOfflineSave;
+                if (!MainActivity.this.currentPageLoadedOffline && save != null
+                        && save.generation == MainActivity.this.navigationGeneration) {
+                    if (MainActivity.this.mainFrameFailed) {
+                        MainActivity.this.pendingOfflineSave = null;
+                        Log.w(TAG, "Page failed to load, not saving offline copy: " + url);
+                    } else {
+                        // onPageFinished can fire more than once (redirects); always (re)schedule the latest.
+                        MainActivity.this.scheduleOfflinePageSave(save, url);
+                    }
                 }
                 MainActivity.this.updateOfflineBadge();
                 MainActivity.this.updateBackButtonVisibility();
@@ -365,13 +365,7 @@ extends AppCompatActivity {
     }
 
     private boolean isUnwantedTitle(String title) {
-        if (title == null || title.trim().isEmpty()) {
-            return false;
-        }
-        String lower = title.toLowerCase(Locale.US);
-        return lower.contains("sex") || lower.contains("porn") || lower.contains("xxx")
-                || lower.contains("adult") || lower.contains("nude") || lower.contains("abuse")
-                || lower.contains("erotic") || lower.contains("hentai");
+        return ContentFilter.isUnwanted(title);
     }
 
     private void showSourcePicker() {
@@ -765,6 +759,15 @@ extends AppCompatActivity {
             this.placeholderView.setVisibility(8);
             this.webView.setVisibility(0);
             int targetIndex = Math.min(Math.max(this.pendingRestoreIndex, 0), this.urlDataList.size() - 1);
+            if (this.pendingRestoreFileName != null && !this.pendingRestoreFileName.isEmpty()) {
+                for (int i = 0; i < this.urlDataList.size(); i++) {
+                    if (this.pendingRestoreFileName.equals(OfflineStore.resolveOfflineFileName(this.urlDataList.get(i)))) {
+                        targetIndex = i;
+                        break;
+                    }
+                }
+            }
+            this.pendingRestoreFileName = null;
             this.pendingRestoreIndex = 0;
             this.navigateToIndex(targetIndex);
         } else {
@@ -816,36 +819,52 @@ extends AppCompatActivity {
         this.placeholderView.setVisibility(View.GONE);
         this.webView.setVisibility(View.VISIBLE);
 
+        final int generation = ++this.navigationGeneration;
+        this.mainFrameFailed = false;
+        this.pendingOfflineSave = null;
+        if (this.pendingSaveRunnable != null) {
+            this.handler.removeCallbacks(this.pendingSaveRunnable);
+            this.pendingSaveRunnable = null;
+        }
+        this.webView.stopLoading();
+
         UrlData currentData = this.urlDataList.get(this.currentIndex);
         File offlineFile = this.getOfflineHtmlFile(currentData);
         this.isLoadedFromExcel = true;
         if (offlineFile.exists()) {
             this.currentPageLoadedOffline = true;
-            this.pendingOfflineSave = null;
-            OfflineStore.upsertMetadataEntry((Context)this, this.currentSheetFolderName, currentData);
-
-            if (OfflineStore.isTrueMhtmlArchive(offlineFile)) {
-                this.webView.loadUrl("file://" + offlineFile.getAbsolutePath());
-            } else {
-                try {
-                    String offlineHtml = this.readOfflineHtml(offlineFile);
-                    offlineHtml = OfflineViewerActivity.injectOfflineFallbackCss(offlineHtml);
-                    offlineHtml = OfflineViewerActivity.stripExternalResources(offlineHtml);
-                    String folderBaseUrl = "file://" + offlineFile.getParentFile().getAbsolutePath() + "/";
-                    String historyUrl = currentData.getWebUrl() == null || currentData.getWebUrl().trim().isEmpty() ? folderBaseUrl : currentData.getWebUrl().trim();
-                    this.webView.loadDataWithBaseURL(folderBaseUrl, offlineHtml, "text/html", "UTF-8", historyUrl);
+            final String folder = this.currentSheetFolderName;
+            this.io.execute(() -> OfflineStore.upsertMetadataEntry((Context)this, folder, currentData));
+            this.pageLoader.execute(() -> {
+                if (OfflineStore.isTrueMhtmlArchive(offlineFile)) {
+                    this.runOnUiThread(() -> {
+                        if (generation == this.navigationGeneration && !this.isDestroyed()) {
+                            this.webView.loadUrl("file://" + offlineFile.getAbsolutePath());
+                        }
+                    });
+                    return;
                 }
-                catch (IOException e) {
-                    Log.e((String)TAG, (String)"Failed to read offline HTML", (Throwable)e);
-                    // Show error inline instead of trying network (which would fail/timeout offline)
-                    String errorHtml = "<html><body style='font-family:sans-serif;text-align:center;padding:40px;color:#333;'>"
+                String html;
+                try {
+                    html = this.readOfflineHtml(offlineFile);
+                    html = OfflineViewerActivity.injectOfflineFallbackCss(html);
+                    html = OfflineViewerActivity.stripExternalResources(html);
+                } catch (IOException | OutOfMemoryError e) {
+                    Log.e(TAG, "Failed to read offline HTML", e);
+                    html = "<html><body style='font-family:sans-serif;text-align:center;padding:40px;color:#333;'>"
                             + "<h2 style='color:#e53935;'>Offline File Read Error</h2>"
                             + "<p>Could not read: <code>" + offlineFile.getName() + "</code></p>"
-                            + "<p style='color:#888;'>" + e.getMessage() + "</p>"
-                            + "</body></html>";
-                    this.webView.loadDataWithBaseURL(null, errorHtml, "text/html", "UTF-8", null);
+                            + "<p style='color:#888;'>" + e.getMessage() + "</p></body></html>";
                 }
-            }
+                final String finalHtml = html;
+                String folderBaseUrl = "file://" + offlineFile.getParentFile().getAbsolutePath() + "/";
+                String historyUrl = currentData.getWebUrl() == null || currentData.getWebUrl().trim().isEmpty() ? folderBaseUrl : currentData.getWebUrl().trim();
+                this.runOnUiThread(() -> {
+                    if (generation == this.navigationGeneration && !this.isDestroyed()) {
+                        this.webView.loadDataWithBaseURL(folderBaseUrl, finalHtml, "text/html", "UTF-8", historyUrl);
+                    }
+                });
+            });
         } else {
             this.loadLiveUrlOrShowError(currentData);
         }
@@ -857,7 +876,7 @@ extends AppCompatActivity {
         String string2 = liveUrl = currentData.getWebUrl() == null ? "" : currentData.getWebUrl().trim();
         if (!liveUrl.isEmpty()) {
             this.currentPageLoadedOffline = false;
-            this.pendingOfflineSave = PendingOfflineSave.from(currentData);
+            this.pendingOfflineSave = this.newPendingSave(currentData, this.navigationGeneration);
             this.webView.loadUrl(liveUrl);
             return;
         }
@@ -879,51 +898,81 @@ extends AppCompatActivity {
                 "      var img = imgs[i];" +
                 "      var lazyUrl = img.getAttribute('data-src') || img.getAttribute('data-original') || img.getAttribute('data-lazy-src') || img.getAttribute('data-url');" +
                 "      if (lazyUrl && !img.src) { img.src = lazyUrl; }" +
+                "      img.loading = 'eager';" +
                 "    }" +
                 "  } catch(e){}" +
                 "})();";
         this.webView.evaluateJavascript(prepJs, null);
 
-        this.handler.postDelayed(() -> {
+        if (this.pendingSaveRunnable != null) {
+            this.handler.removeCallbacks(this.pendingSaveRunnable);
+        }
+        this.pendingSaveRunnable = () -> {
+            this.pendingSaveRunnable = null;
             if (this.isDestroyed() || this.isFinishing()) {
                 return;
             }
+            // The user may have moved on while we waited – never save another page under this name.
+            if (save.generation != this.navigationGeneration || this.mainFrameFailed || this.pendingOfflineSave != save) {
+                return;
+            }
+            if (this.webView.getProgress() < 100 && save.waitRounds++ < 6) {
+                this.scheduleOfflinePageSave(save, baseUrl);
+                return;
+            }
+            this.pendingOfflineSave = null;
             this.saveCurrentPageOffline(save, baseUrl);
-        }, 1500L);
+        };
+        this.handler.postDelayed(this.pendingSaveRunnable, 1500L);
     }
 
     private void saveCurrentPageOffline(PendingOfflineSave save, String baseUrl) {
-        if (this.currentSheetFolderName == null || this.currentSheetFolderName.isEmpty() || save == null) {
+        if (save == null || save.folderName == null || save.folderName.isEmpty()) {
             return;
         }
-        File folderDirectory = OfflineStore.getFolderDirectory((Context)this, this.currentSheetFolderName);
+        File folderDirectory = OfflineStore.getFolderDirectory((Context)this, save.folderName);
         if (!folderDirectory.exists() && !folderDirectory.mkdirs()) {
             Log.w((String)TAG, (String)"Could not create offline cache directory");
             return;
         }
         String mhtFileName = this.ensureMhtFileName(save.offlineFileName, save.originalUrl);
         File mhtFile = new File(folderDirectory, mhtFileName);
-        this.webView.saveWebArchive(mhtFile.getAbsolutePath(), false, savedPath -> {
-            if (savedPath != null && !savedPath.trim().isEmpty() && new File(savedPath).length() > 1024) {
+        File tempFile = new File(folderDirectory, mhtFileName + ".saving");
+        this.webView.saveWebArchive(tempFile.getAbsolutePath(), false, savedPath -> {
+            // The archive is serialised from the page that was showing when the save started,
+            // so it stays valid even if the user has navigated on in the meantime.
+            boolean ok = savedPath != null && !savedPath.trim().isEmpty() && tempFile.length() > 1024;
+            if (ok) {
+                if (mhtFile.exists() && !mhtFile.delete()) {
+                    Log.w(TAG, "Could not replace " + mhtFile.getName());
+                }
+                ok = tempFile.renameTo(mhtFile);
+            }
+            if (ok) {
                 if (save.targetData != null) {
                     save.targetData.setOfflineFileName(mhtFileName);
                 }
-                OfflineStore.upsertMetadataEntry((Context)this, this.currentSheetFolderName, mhtFileName, save.originalUrl, save.title, save.rowIndex);
-                this.runOnUiThread(() -> {
-                    if (this.currentIndex >= 0 && this.currentIndex < this.urlDataList.size() && this.urlDataList.get(this.currentIndex) == save.targetData) {
-                        this.currentPageLoadedOffline = true;
-                        this.updateOfflineBadge();
-                    }
-                });
+                this.io.execute(() -> OfflineStore.upsertMetadataEntry((Context)this, save.folderName, mhtFileName, save.originalUrl, save.title, save.rowIndex));
+                if (this.currentIndex >= 0 && this.currentIndex < this.urlDataList.size() && this.urlDataList.get(this.currentIndex) == save.targetData) {
+                    this.currentPageLoadedOffline = true;
+                    this.updateOfflineBadge();
+                }
                 return;
             }
-            Log.w((String)TAG, (String)"saveWebArchive failed or incomplete, falling back to complete HTML package snapshot");
-            this.fallbackCaptureAndSave(save, baseUrl);
+            //noinspection ResultOfMethodCallIgnored
+            tempFile.delete();
+            if (save.generation == this.navigationGeneration) {
+                Log.w((String)TAG, (String)"saveWebArchive failed or incomplete, falling back to complete HTML package snapshot");
+                this.fallbackCaptureAndSave(save, baseUrl);
+            }
         });
     }
 
     private void fallbackCaptureAndSave(PendingOfflineSave save, String baseUrl) {
         this.webView.evaluateJavascript("(function(){return document.documentElement.outerHTML;})();", value -> {
+            if (save.generation != this.navigationGeneration) {
+                return;
+            }
             String html = this.decodeJavascriptString((String)value);
             if (html != null && !html.trim().isEmpty()) {
                 String htmlFileName = this.ensureHtmlFileName(save.offlineFileName);
@@ -934,21 +983,21 @@ extends AppCompatActivity {
 
     private void writeOfflineHtmlSnapshot(PendingOfflineSave save, String baseUrl, String offlineFileName, String html) {
         try {
-            File offlineFile = new File(OfflineStore.getFolderDirectory((Context)this, this.currentSheetFolderName), offlineFileName);
+            File offlineFile = new File(OfflineStore.getFolderDirectory((Context)this, save.folderName), offlineFileName);
             File parent = offlineFile.getParentFile();
             if (parent != null && !parent.exists() && !parent.mkdirs()) {
                 Log.w((String)TAG, (String)"Could not create offline cache directory");
                 return;
             }
             String enrichedHtml = this.inlineCompleteHtmlPackage(html, baseUrl);
-            try (FileOutputStream outputStream = new FileOutputStream(offlineFile);){
-                outputStream.write(enrichedHtml.getBytes(StandardCharsets.UTF_8));
-                outputStream.flush();
+            if (!OfflineStore.writeAtomically(offlineFile, enrichedHtml.getBytes(StandardCharsets.UTF_8))) {
+                Log.w(TAG, "Could not write offline snapshot " + offlineFileName);
+                return;
             }
             if (save.targetData != null) {
                 save.targetData.setOfflineFileName(offlineFileName);
             }
-            OfflineStore.upsertMetadataEntry((Context)this, this.currentSheetFolderName, offlineFileName, save.originalUrl, save.title, save.rowIndex);
+            OfflineStore.upsertMetadataEntry((Context)this, save.folderName, offlineFileName, save.originalUrl, save.title, save.rowIndex);
             this.runOnUiThread(() -> {
                 if (this.currentIndex >= 0 && this.currentIndex < this.urlDataList.size() && this.urlDataList.get(this.currentIndex) == save.targetData) {
                     this.currentPageLoadedOffline = true;
@@ -1301,7 +1350,8 @@ extends AppCompatActivity {
     }
 
     private void startRecording() {
-        if (ContextCompat.checkSelfPermission((Context)this, (String)"android.permission.RECORD_AUDIO") != 0) {
+        if (ContextCompat.checkSelfPermission((Context)this, (String)"android.permission.RECORD_AUDIO") != 0 && !this.audioPermissionRequested) {
+            this.audioPermissionRequested = true;
             ActivityCompat.requestPermissions((Activity)this, (String[])new String[]{"android.permission.RECORD_AUDIO"}, (int)102);
             return;
         }
@@ -1359,11 +1409,10 @@ extends AppCompatActivity {
     public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == 102) {
-            if (grantResults.length > 0 && grantResults[0] == 0) {
-                this.startRecording();
-            } else {
-                Toast.makeText((Context)this, (CharSequence)"Audio permission is required.", (int)1).show();
+            if (grantResults.length == 0 || grantResults[0] != 0) {
+                Toast.makeText((Context)this, R.string.recording_without_audio, Toast.LENGTH_LONG).show();
             }
+            this.startRecording();
             return;
         }
         if (requestCode == 103) {
@@ -1420,9 +1469,10 @@ extends AppCompatActivity {
             Toast.makeText((Context)this, (int)R.string.select_excel_to_edit, (int)1).show();
             return;
         }
-        new Thread(() -> {
+        final Uri excelUri = this.selectedExcelUri;
+        this.io.execute(() -> {
             boolean saveSucceeded = false;
-            try (InputStream is = this.getContentResolver().openInputStream(this.selectedExcelUri);
+            try (InputStream is = this.getContentResolver().openInputStream(excelUri);
                  Workbook workbook = WorkbookFactory.create((InputStream)is);){
                 Cell filenameCell;
                 Sheet sheet = workbook.getSheetAt(0);
@@ -1439,7 +1489,7 @@ extends AppCompatActivity {
                     urlCell = row.createCell(1);
                 }
                 urlCell.setCellValue(updatedData.getWebUrl());
-                try (ParcelFileDescriptor pfd = this.getContentResolver().openFileDescriptor(this.selectedExcelUri, "rwt");
+                try (ParcelFileDescriptor pfd = this.getContentResolver().openFileDescriptor(excelUri, "rwt");
                      FileOutputStream outputStream = new FileOutputStream(pfd.getFileDescriptor());){
                     workbook.write((OutputStream)outputStream);
                     outputStream.flush();
@@ -1463,11 +1513,11 @@ extends AppCompatActivity {
                     Toast.makeText((Context)this, (int)R.string.excel_changes_failed, (int)1).show();
                 }
             });
-        }).start();
+        });
     }
 
     private void saveCurrentEntryLocally(UrlData updatedData, String previousOfflineFileName, boolean reloadWebPage) {
-        new Thread(() -> {
+        this.io.execute(() -> {
             this.updateLocalEntryMetadata(updatedData, previousOfflineFileName, reloadWebPage);
             this.runOnUiThread(() -> {
                 Toast.makeText((Context)this, (int)R.string.local_changes_saved, (int)0).show();
@@ -1477,7 +1527,7 @@ extends AppCompatActivity {
                     this.updateUiForRecordingState();
                 }
             });
-        }).start();
+        });
     }
 
     private void updateLocalEntryMetadata(UrlData updatedData, String previousOfflineFileName, boolean urlChanged) {
@@ -1634,9 +1684,9 @@ extends AppCompatActivity {
         String title = currentData.getFilename() == null ? "" : currentData.getFilename();
         String message = String.format(Locale.getDefault(), this.getString(R.string.confirm_delete_msg), title);
 
-        boolean hasSensitiveKeyword = title.toLowerCase(Locale.US).contains("sex");
-        if (hasSensitiveKeyword) {
-            message = "⚠️ Sensitive keyword detected in title!\n\n" + message;
+        String sensitiveWord = ContentFilter.matchedWord(title);
+        if (sensitiveWord != null) {
+            message = "⚠️ Sensitive word \"" + sensitiveWord + "\" detected in title.\n\n" + message;
         }
 
         new AlertDialog.Builder((Context)this)
@@ -1655,14 +1705,29 @@ extends AppCompatActivity {
         String offlineFileName = OfflineStore.resolveOfflineFileName(targetData);
         int targetRowIndex = targetData.getRowIndex();
 
-        // 1. Delete local file and remove from local metadata
-        this.deleteOfflineEntry(offlineFileName);
-
-        // 2. Queue for server deletion
-        if (this.currentSheetFolderName != null && !this.currentSheetFolderName.isEmpty()) {
-            OfflineStore.queuePendingDeletion((Context)this, this.currentSheetFolderName, offlineFileName);
-            this.postImmediateServerDelete(this.currentSheetFolderName, offlineFileName, targetData.getFilename());
-        }
+        final String folder = this.currentSheetFolderName;
+        // 1. Delete the local copy, 2. queue the cloud deletion (pushed in the background when cloud sync is set up)
+        this.io.execute(() -> {
+            File file = new File(OfflineStore.getFolderDirectory((Context)this, folder), offlineFileName);
+            if (file.exists() && !file.delete()) {
+                Log.w(TAG, "Could not delete offline file " + offlineFileName);
+            }
+            OfflineStore.removeMetadataEntry((Context)this, folder, offlineFileName);
+            if (folder != null && !folder.isEmpty()) {
+                OfflineStore.queuePendingDeletion((Context)this, folder, offlineFileName, true);
+                if (OfflineStore.isCloudConfigured(this) && !SyncService.isRunning() && !RecordingService.isRecording) {
+                    java.util.ArrayList<String> folders = new java.util.ArrayList<>();
+                    folders.add(folder);
+                    this.runOnUiThread(() -> {
+                        try {
+                            SyncService.start(this, SyncEngine.Mode.UPLOAD_ONLY, folders, true);
+                        } catch (Exception e) {
+                            Log.w(TAG, "Could not start background cloud delete", e);
+                        }
+                    });
+                }
+            }
+        });
 
         // 3. Update Excel file if write access is enabled
         if (this.isCurrentSourceExcel && targetRowIndex >= 0) {
@@ -1693,52 +1758,28 @@ extends AppCompatActivity {
         if (this.selectedExcelUri == null || !this.hasExcelWriteAccess) {
             return;
         }
-        new Thread(() -> {
-            try (InputStream is = this.getContentResolver().openInputStream(this.selectedExcelUri);
+        final Uri excelUri = this.selectedExcelUri;
+        this.io.execute(() -> {
+            try (InputStream is = this.getContentResolver().openInputStream(excelUri);
                  Workbook workbook = WorkbookFactory.create(is)) {
                 Sheet sheet = workbook.getSheetAt(0);
                 Row row = sheet.getRow(rowIndex);
-                if (row != null) {
-                    sheet.removeRow(row);
+                if (row == null) {
+                    return;
                 }
-                try (OutputStream os = this.getContentResolver().openOutputStream(this.selectedExcelUri, "w")) {
+                // Clear the row instead of shifting so the row numbers of the other entries stay valid.
+                sheet.removeRow(row);
+                try (ParcelFileDescriptor pfd = this.getContentResolver().openFileDescriptor(excelUri, "rwt");
+                     FileOutputStream os = new FileOutputStream(pfd.getFileDescriptor())) {
                     workbook.write(os);
+                    os.flush();
                 }
             } catch (Exception e) {
                 Log.e(TAG, "removeExcelRow", e);
+                this.runOnUiThread(() -> Toast.makeText(this, R.string.excel_changes_failed, Toast.LENGTH_LONG).show());
             }
-        }).start();
+        });
     }
-
-    private void postImmediateServerDelete(String folderName, String offlineFileName, String title) {
-        String serverUrl = OfflineStore.getServerBaseUrl(this);
-        if (serverUrl.isEmpty() || folderName.isEmpty() || offlineFileName.isEmpty()) {
-            return;
-        }
-        new Thread(() -> {
-            try {
-                URL url = new URL(serverUrl + "/sync_api.php");
-                HttpURLConnection connection = (HttpURLConnection) url.openConnection();
-                connection.setConnectTimeout(10000);
-                connection.setReadTimeout(10000);
-                connection.setRequestMethod("POST");
-                connection.setDoOutput(true);
-                connection.setRequestProperty("Content-Type", "application/x-www-form-urlencoded");
-
-                String postData = "action=delete&folder=" + URLEncoder.encode(folderName, "UTF-8")
-                        + "&file=" + URLEncoder.encode(offlineFileName, "UTF-8")
-                        + "&reason=moderated";
-                try (OutputStream os = connection.getOutputStream()) {
-                    os.write(postData.getBytes(StandardCharsets.UTF_8));
-                    os.flush();
-                }
-                connection.getResponseCode();
-            } catch (Exception e) {
-                Log.w(TAG, "postImmediateServerDelete", e);
-            }
-        }).start();
-    }
-
 
     private static final class DownloadedResource {
         final byte[] bytes;
@@ -1749,23 +1790,28 @@ extends AppCompatActivity {
             this.mimeType = mimeType;
         }
     }
-    private static final class PendingOfflineSave {
+    private final class PendingOfflineSave {
         final String offlineFileName;
         final String originalUrl;
         final String title;
         final int rowIndex;
         final UrlData targetData;
+        final int generation;
+        final String folderName;
+        int waitRounds = 0;
 
-        PendingOfflineSave(String offlineFileName, String originalUrl, String title, int rowIndex, UrlData targetData) {
+        PendingOfflineSave(String offlineFileName, String originalUrl, String title, int rowIndex, UrlData targetData, int generation, String folderName) {
             this.offlineFileName = offlineFileName;
             this.originalUrl = originalUrl;
             this.title = title;
             this.rowIndex = rowIndex;
             this.targetData = targetData;
+            this.generation = generation;
+            this.folderName = folderName;
         }
+    }
 
-        static PendingOfflineSave from(UrlData data) {
-            return new PendingOfflineSave(OfflineStore.resolveOfflineFileName(data), data.getWebUrl(), data.getFilename(), data.getRowIndex(), data);
-        }
+    private PendingOfflineSave newPendingSave(UrlData data, int generation) {
+        return new PendingOfflineSave(OfflineStore.resolveOfflineFileName(data), data.getWebUrl(), data.getFilename(), data.getRowIndex(), data, generation, this.currentSheetFolderName);
     }
 }

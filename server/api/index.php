@@ -2,14 +2,60 @@
 
 declare(strict_types=1);
 
-date_default_timezone_set('Asia/Kolkata');
+/*
+ * WebRecorder cloud dashboard (Vercel, PHP runtime).
+ *
+ * Reads everything from the private GitHub storage repository that the Android app
+ * syncs to, so nothing needs to be stored on Vercel itself.
+ *
+ * Environment variables (Vercel → Project → Settings → Environment Variables):
+ *   GITHUB_TOKEN        fine-grained token with "Contents: Read" on the storage repo
+ *   GITHUB_REPO         e.g. JugendraRajput/webrecorder-data
+ *   GITHUB_BRANCH       optional, default "main"
+ *   DASHBOARD_PASSWORD  optional; when set the dashboard asks for it
+ */
 
-$storageRoot = __DIR__ . DIRECTORY_SEPARATOR . 'storage';
-if (!is_dir($storageRoot)) {
-    mkdir($storageRoot, 0775, true);
+date_default_timezone_set('Asia/Kolkata');
+require __DIR__ . '/github.php';
+
+$path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
+if ($path === '/robots.txt') {
+    header('Content-Type: text/plain');
+    echo "User-agent: *\nDisallow: /\n";
+    exit;
+}
+if ($path === '/favicon.ico') {
+    http_response_code(204);
+    exit;
 }
 
-// 1. Calculate Server Stats & Load Folder Manifests
+$gh = GitHubRepo::fromEnv();
+if ($gh === null) {
+    render_setup_page();
+    exit;
+}
+require_password();
+
+// Open / download a single archived page (streams through this function).
+if (isset($_GET['open'])) {
+    $target = (string) $_GET['open'];
+    if (!preg_match('#^[A-Za-z0-9_-]{1,80}/[A-Za-z0-9._-]+\.(html|mht)$#', $target)) {
+        http_response_code(400);
+        exit('Invalid file');
+    }
+    $gh->streamFile('pages/' . $target);
+    exit;
+}
+
+try {
+    $snapshot = $gh->snapshot();
+} catch (Throwable $e) {
+    http_response_code(502);
+    render_error_page($e->getMessage());
+    exit;
+}
+
+// 1. Folders, files and stats
 $folders = [];
 $totalFiles = 0;
 $totalSize = 0;
@@ -18,56 +64,34 @@ $folderChartLabels = [];
 $folderChartData = [];
 $folderFileCounts = [];
 
-$dirEntries = glob($storageRoot . DIRECTORY_SEPARATOR . '*', GLOB_ONLYDIR) ?: [];
-foreach ($dirEntries as $directory) {
-    $folderName = basename($directory);
-    $metadataPath = $directory . DIRECTORY_SEPARATOR . 'metadata.json';
-    $metadata = [];
-    if (is_file($metadataPath)) {
-        $decoded = json_decode((string) file_get_contents($metadataPath), true);
-        if (is_array($decoded)) {
-            $metadata = $decoded;
-        }
-    }
-
+foreach ($snapshot['folders'] as $folderName => $info) {
+    $metadata = $info['metadata'];
     $folderFiles = [];
     $folderSize = 0;
     $folderLatestSync = 0;
-
-    $htmlFiles = glob($directory . DIRECTORY_SEPARATOR . '*.html') ?: [];
-    $mhtFiles = glob($directory . DIRECTORY_SEPARATOR . '*.mht') ?: [];
-    $allFiles = array_merge($htmlFiles, $mhtFiles);
-
-    foreach ($allFiles as $filePath) {
-        $fileName = basename($filePath);
-        $fileSize = filesize($filePath);
-        $fileMtime = filemtime($filePath);
-        $metaEntry = $metadata[$fileName] ?? [];
-        $updatedAt = (int) ($metaEntry['updated_at'] ?? $fileMtime);
-
-        $folderSize += $fileSize;
-        if ($updatedAt > $folderLatestSync) {
-            $folderLatestSync = $updatedAt;
-        }
-
+    foreach ($info['files'] as $fileName => $size) {
+        $metaEntry = is_array($metadata[$fileName] ?? null) ? $metadata[$fileName] : [];
+        $updatedAt = (int) ($metaEntry['updated_at'] ?? 0);
+        $folderSize += $size;
+        $folderLatestSync = max($folderLatestSync, $updatedAt);
         $folderFiles[] = [
             'name' => $fileName,
-            'size' => $fileSize,
+            'size' => $size,
             'updated_at' => $updatedAt,
             'title' => (string) ($metaEntry['title'] ?? pathinfo($fileName, PATHINFO_FILENAME)),
             'original_url' => (string) ($metaEntry['original_url'] ?? ''),
             'row_index' => isset($metaEntry['row_index']) ? (int) $metaEntry['row_index'] : -1,
         ];
     }
-
-    usort($folderFiles, static fn(array $a, array $b): int => strcmp($a['name'], $b['name']));
+    usort($folderFiles, static function (array $a, array $b): int {
+        $ra = $a['row_index'] < 0 ? PHP_INT_MAX : $a['row_index'];
+        $rb = $b['row_index'] < 0 ? PHP_INT_MAX : $b['row_index'];
+        return $ra <=> $rb ?: strcasecmp($a['title'], $b['title']);
+    });
 
     $totalFiles += count($folderFiles);
     $totalSize += $folderSize;
-    if ($folderLatestSync > $latestSyncTimestamp) {
-        $latestSyncTimestamp = $folderLatestSync;
-    }
-
+    $latestSyncTimestamp = max($latestSyncTimestamp, $folderLatestSync);
     $folders[] = [
         'name' => $folderName,
         'file_count' => count($folderFiles),
@@ -75,62 +99,40 @@ foreach ($dirEntries as $directory) {
         'latest_sync' => $folderLatestSync,
         'files' => $folderFiles,
     ];
-
     $folderChartLabels[] = str_replace('_', ' ', $folderName);
-    $folderChartData[] = round($folderSize / (1024 * 1024), 2); // MB
+    $folderChartData[] = round($folderSize / (1024 * 1024), 2);
     $folderFileCounts[] = count($folderFiles);
 }
+usort($folders, static fn(array $a, array $b): int => strcasecmp($a['name'], $b['name']));
 
-usort($folders, static fn(array $a, array $b): int => strcmp($a['name'], $b['name']));
-
-// 2. Load & Group Sync History Log
-$historyPath = $storageRoot . DIRECTORY_SEPARATOR . 'history.json';
+// 2. Sync history (written by the app, newest first)
 $rawHistory = [];
-if (is_file($historyPath)) {
-    $decodedHistory = json_decode((string) file_get_contents($historyPath), true);
-    if (is_array($decodedHistory)) {
-        $rawHistory = $decodedHistory;
+foreach ($snapshot['history'] as $event) {
+    if (!is_array($event)) {
+        continue;
     }
+    $event['ip'] = (string) ($event['device'] ?? ($event['ip'] ?? ''));
+    $rawHistory[] = $event;
+    $latestSyncTimestamp = max($latestSyncTimestamp, (int) ($event['timestamp'] ?? 0));
 }
 
-// Action counts for Chart
-$actionCounts = [
-    'upload' => 0,
-    'download' => 0,
-    'delete' => 0,
-    'moderated' => 0,
-];
-
+$actionCounts = ['upload' => 0, 'download' => 0, 'delete' => 0, 'moderated' => 0];
 $moderatedEntries = [];
-
-// Group consecutive / duplicate hits by action + folder + filename within 10-min window
 $groupedHistory = [];
 $currentGroup = null;
-
 foreach ($rawHistory as $event) {
     $action = strtolower((string) ($event['action'] ?? 'sync'));
-    if (isset($actionCounts[$action])) {
-        $actionCounts[$action]++;
-    } else {
-        $actionCounts[$action] = 1;
-    }
-
+    $actionCounts[$action] = ($actionCounts[$action] ?? 0) + 1;
     if ($action === 'moderated') {
         $moderatedEntries[] = $event;
     }
-
     $folder = (string) ($event['folder'] ?? '');
     $filename = (string) ($event['filename'] ?? '');
     $title = (string) ($event['title'] ?? '');
     $timestamp = (int) ($event['timestamp'] ?? time());
     $ip = (string) ($event['ip'] ?? '');
-
-    if ($currentGroup !== null &&
-        $currentGroup['action'] === $action &&
-        $currentGroup['folder'] === $folder &&
-        $currentGroup['filename'] === $filename &&
-        abs($currentGroup['latest_timestamp'] - $timestamp) < 600
-    ) {
+    if ($currentGroup !== null && $currentGroup['action'] === $action && $currentGroup['folder'] === $folder
+        && $currentGroup['filename'] === $filename && abs($currentGroup['latest_timestamp'] - $timestamp) < 600) {
         $currentGroup['hits']++;
         $currentGroup['earliest_timestamp'] = min($currentGroup['earliest_timestamp'], $timestamp);
         $currentGroup['items'][] = $event;
@@ -139,16 +141,9 @@ foreach ($rawHistory as $event) {
             $groupedHistory[] = $currentGroup;
         }
         $currentGroup = [
-            'id' => uniqid('grp_'),
-            'action' => $action,
-            'folder' => $folder,
-            'filename' => $filename,
-            'title' => $title,
-            'latest_timestamp' => $timestamp,
-            'earliest_timestamp' => $timestamp,
-            'ip' => $ip,
-            'hits' => 1,
-            'items' => [$event],
+            'id' => uniqid('grp_'), 'action' => $action, 'folder' => $folder, 'filename' => $filename,
+            'title' => $title, 'latest_timestamp' => $timestamp, 'earliest_timestamp' => $timestamp,
+            'ip' => $ip, 'hits' => 1, 'items' => [$event],
         ];
     }
 }
@@ -160,17 +155,10 @@ if (isset($_GET['export']) && $_GET['export'] === 'csv') {
     header('Content-Type: text/csv; charset=UTF-8');
     header('Content-Disposition: attachment; filename="sync_audit_history_' . date('Y-m-d_H-i-s') . '.csv"');
     $output = fopen('php://output', 'w');
-    fputcsv($output, ['Timestamp (IST)', 'Action', 'Folder', 'Title', 'File Name', 'Hits', 'Client IP']);
+    fputcsv($output, ['Timestamp (IST)', 'Action', 'Folder', 'Title', 'File Name', 'Hits', 'Device']);
     foreach ($groupedHistory as $group) {
-        fputcsv($output, [
-            format_date($group['latest_timestamp']),
-            strtoupper($group['action']),
-            $group['folder'],
-            $group['title'],
-            $group['filename'],
-            $group['hits'],
-            $group['ip']
-        ]);
+        fputcsv($output, [format_date($group['latest_timestamp']), strtoupper($group['action']), $group['folder'],
+            $group['title'], $group['filename'], $group['hits'], $group['ip']]);
     }
     fclose($output);
     exit;
@@ -179,14 +167,16 @@ if (isset($_GET['export']) && $_GET['export'] === 'csv') {
 $hourCounts = array_fill(0, 24, 0);
 foreach ($rawHistory as $event) {
     if (isset($event['timestamp'])) {
-        $dt = new DateTime("@" . $event['timestamp']);
+        $dt = new DateTime('@' . (int) $event['timestamp']);
         $dt->setTimezone(new DateTimeZone('Asia/Kolkata'));
-        $hour = (int)$dt->format('G');
-        $hourCounts[$hour]++;
+        $hourCounts[(int) $dt->format('G')]++;
     }
 }
-$peakHour = array_search(max($hourCounts), $hourCounts);
-$peakHourFormatted = sprintf('%02d:00 - %02d:00 IST', $peakHour, ($peakHour + 1) % 24);
+$peakHourFormatted = max($hourCounts) > 0
+    ? sprintf('%02d:00 - %02d:00 IST', array_search(max($hourCounts), $hourCounts), (array_search(max($hourCounts), $hourCounts) + 1) % 24)
+    : 'N/A';
+
+header('Cache-Control: private, max-age=0, no-store');
 
 function format_bytes(int $bytes): string
 {
@@ -216,8 +206,41 @@ function format_date(int $timestamp): string
     }
 }
 
-?>
-<!DOCTYPE html>
+
+function render_setup_page(): void
+{
+    http_response_code(503);
+    echo '<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>WebRecorder – setup</title>'
+        . '<style>body{font-family:system-ui,sans-serif;background:#0f172a;color:#f8fafc;padding:32px;line-height:1.6}code{background:#1e293b;padding:2px 6px;border-radius:4px}</style></head><body>'
+        . '<h1>WebRecorder dashboard needs setup</h1><p>Add these Environment Variables in Vercel and redeploy:</p>'
+        . '<ul><li><code>GITHUB_TOKEN</code> – fine-grained token with <b>Contents: Read</b> on the storage repo</li>'
+        . '<li><code>GITHUB_REPO</code> – e.g. <code>JugendraRajput/webrecorder-data</code></li>'
+        . '<li><code>GITHUB_BRANCH</code> – optional (default <code>main</code>)</li></ul></body></html>';
+}
+
+function render_error_page(string $message): void
+{
+    echo '<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>WebRecorder – error</title>'
+        . '<style>body{font-family:system-ui,sans-serif;background:#0f172a;color:#f8fafc;padding:32px}</style></head><body>'
+        . '<h1>Could not read the storage repository</h1><p>' . htmlspecialchars($message) . '</p>'
+        . '<p>Check GITHUB_TOKEN / GITHUB_REPO in the Vercel project settings.</p></body></html>';
+}
+
+function require_password(): void
+{
+    $password = getenv('DASHBOARD_PASSWORD');
+    if ($password === false || $password === '') {
+        return;
+    }
+    $given = $_SERVER['PHP_AUTH_PW'] ?? '';
+    if (!hash_equals($password, (string) $given)) {
+        header('WWW-Authenticate: Basic realm="WebRecorder"');
+        http_response_code(401);
+        exit('Password required');
+    }
+}
+
+?><!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -606,10 +629,10 @@ function format_date(int $timestamp): string
     <header>
         <div class="header-title">
             <h1>🌐 WebRecorder Cloud &amp; Analytics</h1>
-            <p>Live storage metrics, visual graphs, and sync audit logs for <strong>webrecorder.jdworks.in</strong></p>
+            <p>Offline pages stored in <strong><?= htmlspecialchars($gh->label()) ?></strong> · synced by the WebRecorder app</p>
         </div>
         <div class="server-status-pill">
-            Server Active
+            Connected to GitHub
         </div>
     </header>
 
@@ -628,7 +651,7 @@ function format_date(int $timestamp): string
         <div class="stat-card">
             <div class="label">Storage Used</div>
             <div class="value"><?= format_bytes($totalSize) ?></div>
-            <div class="subtext">Total server disk space</div>
+            <div class="subtext">Total size in the cloud</div>
         </div>
         <div class="stat-card">
             <div class="label">Moderated / Deleted</div>
@@ -673,7 +696,7 @@ function format_date(int $timestamp): string
 
     <?php if (empty($folders)): ?>
         <div class="stat-card" style="text-align: center; padding: 40px;">
-            <h3>No offline folders found on server</h3>
+            <h3>No offline folders in the cloud yet</h3>
             <p style="margin-top: 8px; color: var(--text-secondary);">Sync from the WebRecorder Android app to start uploading archived web pages.</p>
         </div>
     <?php else: ?>
@@ -724,7 +747,7 @@ function format_date(int $timestamp): string
                                         <td><?= format_bytes($file['size']) ?></td>
                                         <td><?= format_date($file['updated_at']) ?></td>
                                         <td>
-                                            <a href="sync_api.php?action=download&folder=<?= urlencode($folder['name']) ?>&file=<?= urlencode($file['name']) ?>" class="btn-download" target="_blank">
+                                            <a href="?open=<?= urlencode($folder['name'] . '/' . $file['name']) ?>" class="btn-download" target="_blank" rel="noopener">
                                                 Open / Download
                                             </a>
                                         </td>
@@ -770,7 +793,7 @@ function format_date(int $timestamp): string
                             <th>Folder</th>
                             <th>Title / File</th>
                             <th>Hits / Hits Detail</th>
-                            <th>Client IP</th>
+                            <th>Device</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -805,7 +828,7 @@ function format_date(int $timestamp): string
                                         <ul>
                                             <?php foreach ($group['items'] as $item): ?>
                                                 <li style="margin-left: 16px; margin-bottom: 4px;">
-                                                    <?= format_date((int) ($item['timestamp'] ?? 0)) ?> — IP: <code><?= htmlspecialchars((string) ($item['ip'] ?? '')) ?></code>
+                                                    <?= format_date((int) ($item['timestamp'] ?? 0)) ?> — Device: <code><?= htmlspecialchars((string) ($item['ip'] ?? '')) ?></code>
                                                 </li>
                                             <?php endforeach; ?>
                                         </ul>

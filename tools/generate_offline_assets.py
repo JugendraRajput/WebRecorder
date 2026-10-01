@@ -17,6 +17,7 @@ import argparse
 import hashlib
 import json
 import mimetypes
+import os
 import re
 import sys
 import time
@@ -62,18 +63,36 @@ def normalize_cell(value: object) -> str:
     return str(value).strip()
 
 
-UNWANTED_KEYWORDS = {"sex", "porn", "xxx", "adult", "nude", "abuse", "erotic", "hentai"}
+# Same whole-word list as the Android app (ContentFilter.java) and Excel_Fixer/filter_and_push.js.
+UNWANTED_WORDS = [
+    "sex", "sexy", "sexual", "sexuality", "porn", "porno", "pornography", "pornographic",
+    "xxx", "adult", "nude", "nudity", "naked", "erotic", "erotica", "hentai",
+    "rape", "rapist", "rapists", "incest", "orgasm", "orgasms", "intercourse",
+    "masturbate", "masturbation", "dildo", "dildos", "vagina", "penis",
+    "blowjob", "blowjobs", "handjob", "handjobs", "cum", "cumming",
+    "stripper", "strippers", "striptease",
+    "escort", "escorts", "prostitute", "prostitutes", "prostitution", "brothel",
+    "whore", "whores", "slut", "sluts", "slutty",
+    "tits", "titties", "boobs", "topless", "bdsm", "fetish", "fetishes",
+    "threesome", "threesomes", "orgy", "orgies",
+    "pedophile", "pedophiles", "paedophile", "paedophiles",
+    "molest", "molested", "molestation", "molester",
+    "lust", "pimp", "pimps", "pimpin", "pimping", "kinky",
+    "fuck", "fucker", "fuckers", "fucking", "fucked", "motherfucker", "motherfuckers", "motherfucking",
+    "shit", "shits", "bullshit", "shitty", "dipshit",
+    "bitch", "bitches", "bitching", "bastard", "bastards",
+    "ass", "asshole", "assholes", "dumbass", "jackass",
+    "cunt", "cunts", "dickhead", "dickheads", "cocksucker", "cocksuckers",
+    "nigger", "niggers", "nigga", "niggas", "faggot", "faggots", "fag", "fags",
+    "retard", "retards", "retarded", "abuse", "abusive", "abuser", "vulgar",
+    "chutiya", "chutiyo", "madarchod", "bhenchod", "gaand", "gand",
+    "bhosadi", "bhosadike", "randi", "harami", "kameena", "kamina", "saala", "kamini",
+]
+UNWANTED_RE = re.compile(r"\b(" + "|".join(UNWANTED_WORDS) + r")\b", re.IGNORECASE)
 
 
 def is_unwanted_title(title: str) -> bool:
-    if not title:
-        return False
-    lower_title = title.lower()
-    words = re.findall(r"\b\w+\b", lower_title)
-    for kw in UNWANTED_KEYWORDS:
-        if kw in words or kw in lower_title:
-            return True
-    return False
+    return bool(title) and UNWANTED_RE.search(title) is not None
 
 
 def parse_excel_rows(excel_path: Path) -> List[RowItem]:
@@ -81,7 +100,8 @@ def parse_excel_rows(excel_path: Path) -> List[RowItem]:
     sheet = workbook[workbook.sheetnames[0]]
 
     rows: List[RowItem] = []
-    for row_index, row in enumerate(sheet.iter_rows(min_row=2, max_col=2, values_only=True), start=2):
+    # row_index matches the Android app (0-based sheet row number, header = row 0).
+    for row_index, row in enumerate(sheet.iter_rows(min_row=2, max_col=2, values_only=True), start=1):
         title = normalize_cell(row[0])
         url = normalize_cell(row[1])
         if not title or not url:
@@ -772,26 +792,6 @@ def resolve_excel_inputs(args) -> List[Path]:
     if not excel_files:
         raise RuntimeError("No .xlsx files found in folder.")
 
-def upload_file_to_server(server_base_url: str, folder_name: str, file_path: Path, title: str, original_url: str, row_index: int) -> bool:
-    endpoint = f"{server_base_url.rstrip('/')}/sync_api.php"
-    data = {
-        "action": "upload",
-        "folder": folder_name,
-        "filename": file_path.name,
-        "title": title,
-        "original_url": original_url,
-        "row_index": str(row_index),
-    }
-    with open(file_path, "rb") as f:
-        files = {"html_file": (file_path.name, f, "text/html")}
-        try:
-            res = requests.post(endpoint, data=data, files=files, timeout=30)
-            return res.status_code == 200 and res.json().get("ok", False)
-        except Exception as e:
-            print(f"    ! Upload error: {e}")
-            return False
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description="Generate WebRecorder offline asset bundle from Excel.")
     parser.add_argument("--excel", help="Path to one .xlsx Excel file")
@@ -805,7 +805,10 @@ def main() -> int:
     parser.add_argument("--max-total-mb", type=int, default=120, help="Max total embedded image data per page in MB")
     parser.add_argument("--max-css-asset-mb", type=int, default=10, help="Max bytes per CSS resource (background image/font) in MB")
     parser.add_argument("--recheck-attempts", type=int, default=2, help="Retry passes for missing image/CSS resources after saving each page")
-    parser.add_argument("--upload-server", help="Server base URL to upload generated assets to (e.g. https://webrecorder.jdworks.in)")
+    parser.add_argument("--upload", action="store_true",
+                        help="Upload generated folders to the GitHub cloud storage (needs GITHUB_TOKEN env var)")
+    parser.add_argument("--repo", default=os.environ.get("GITHUB_REPO", "JugendraRajput/webrecorder-data"),
+                        help="GitHub storage repository (owner/repo)")
     args = parser.parse_args()
 
     try:
@@ -864,33 +867,20 @@ def main() -> int:
             grand_total += total_rows
             print(f"  Done: {success_count}/{total_rows} -> {bundle_dir}\n")
 
-            if args.upload_server:
-                print(f"  Uploading folder '{folder_name}' to server: {args.upload_server} ...")
-                metadata_file = bundle_dir / "metadata.json"
-                if metadata_file.exists():
-                    meta_data = json.loads(metadata_file.read_text(encoding="utf-8"))
-                    upload_success = 0
-                    for fname, entry in meta_data.items():
-                        fpath = bundle_dir / fname
-                        if fpath.exists():
-                            ok = upload_file_to_server(
-                                server_base_url=args.upload_server,
-                                folder_name=folder_name,
-                                file_path=fpath,
-                                title=entry.get("title", ""),
-                                original_url=entry.get("original_url", ""),
-                                row_index=entry.get("row_index", -1),
-                            )
-                            if ok:
-                                upload_success += 1
-                    print(f"  Uploaded: {upload_success}/{len(meta_data)} files to server.\n")
+            if args.upload:
+                from github_storage import GitHubStorage, upload_folder
+                print(f"  Uploading folder '{folder_name}' to GitHub ({args.repo}) ...")
+                gh = GitHubStorage(args.repo, os.environ.get("GITHUB_TOKEN", ""))
+                uploaded = upload_folder(gh, bundle_dir, folder_name)
+                print(f"  Uploaded {uploaded} new/changed file(s).\n")
 
         except Exception as exc:
             print(f"  Failed: {exc}\n")
 
     print("All done.")
     print(f"Saved pages total: {grand_success}/{grand_total}")
-    print("Copy generated folder(s) into Android assets path:")
+    print("Upload them with --upload (or tools/github_storage.py upload <folder>), then use")
+    print("Cloud Sync in the app. Or copy the folder(s) into the Android assets path:")
     print("  app/src/main/assets/offline_pages/<your_folder>")
     print("Then use app option: Select Source -> Load From Assets")
     return 0

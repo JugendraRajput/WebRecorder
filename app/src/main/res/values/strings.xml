@@ -12,7 +12,7 @@
     <string name="no_assets_folders">No assets offline folders found in app assets/offline_pages.</string>
     <string name="resume_last_session">Resume Last Session</string>
     <string name="no_last_session_available">No previous session is available to resume.</string>
-    <string name="no_downloaded_folders">No downloaded folders are available yet. Sync from the server first.</string>
+    <string name="no_downloaded_folders">No offline folders on this device yet. Save some pages or download them with Cloud Sync.</string>
     <string name="loading_downloaded_folder">Loading downloaded folder...</string>
     <string name="loading_excel_file">Loading Excel file...</string>
     <string name="failed_to_load_file">Failed to load file.</string>
@@ -40,19 +40,25 @@
     <string name="refresh_sync_status">Refresh Sync Status</string>
     <string name="sync_current_list">Sync Current List</string>
     <string name="download_all_server_folders">Download All Server Folders</string>
-    <string name="sync_settings">Sync Settings</string>
+    <string name="sync_settings">Cloud Sync</string>
     <string name="server_url_required">Please enter the server base URL first.</string>
     <string name="no_list_selected">No list selected yet.</string>
     <string name="entry_filename_hint">Title / Filename</string>
     <string name="entry_url_hint">Web URL</string>
     <string name="delete_entry">Delete Entry</string>
     <string name="confirm_delete_title">Delete / Moderate Entry</string>
-    <string name="confirm_delete_msg">Are you sure you want to delete "%s"? It will be removed from local memory, offline storage, Excel sheet, and queued for server removal.</string>
+    <string name="confirm_delete_msg">Are you sure you want to delete "%s"? It will be removed from this list, the offline copy, the Excel sheet (if editable) and from the cloud on the next sync.</string>
     <string name="entry_deleted">Entry removed successfully.</string>
-    <string name="auto_batch_downloader">Auto Batch Downloader</string>
+    <string name="auto_batch_downloader">Batch Downloader</string>
     <string name="offline_manager">Offline Manager</string>
     <string name="offline_viewer">Offline Viewer</string>
     <string name="validate_all">Validate All</string>
     <string name="sync_folder">Sync Folder</string>
     <string name="open_in_recorder">Open in Recorder</string>
+    <string name="recording_saved">Recording saved to Movies/WebRecordings</string>
+    <string name="recording_too_short">Recording was too short and was discarded.</string>
+    <string name="recording_without_audio">Microphone permission denied – recording video without audio.</string>
+    <string name="pause">Pause</string>
+    <string name="resume">Resume</string>
+    <string name="stop">Stop</string>
 </resources>

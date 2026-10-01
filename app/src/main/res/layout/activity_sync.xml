@@ -62,7 +62,7 @@
                             android:layout_width="0dp"
                             android:layout_height="wrap_content"
                             android:layout_weight="1"
-                            android:text="Cloud Sync Server"
+                            android:text="Cloud Storage (GitHub)"
                             android:textAppearance="@style/TextAppearance.Material3.TitleMedium"
                             android:textColor="@color/text_primary"
                             android:textStyle="bold" />
@@ -80,25 +80,95 @@
                             android:textStyle="bold" />
                     </LinearLayout>
 
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:text="Pages are stored in your private GitHub repository. Only changed files are transferred."
+                        android:textColor="@color/text_secondary"
+                        android:textSize="12sp" />
+
                     <com.google.android.material.textfield.TextInputLayout
                         style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="10dp"
+                        android:hint="Repository (owner/repo)"
                         app:boxCornerRadiusBottomEnd="10dp"
                         app:boxCornerRadiusBottomStart="10dp"
                         app:boxCornerRadiusTopEnd="10dp"
                         app:boxCornerRadiusTopStart="10dp">
 
                         <com.google.android.material.textfield.TextInputEditText
-                            android:id="@+id/edit_server_url"
+                            android:id="@+id/edit_repo"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
-                            android:hint="Server URL (e.g. https://webrecorder.jdworks.in)"
-                            android:inputType="textUri"
+                            android:inputType="textUri|textNoSuggestions"
+                            android:maxLines="1"
                             android:textColor="@color/text_primary"
                             android:textSize="14sp" />
                     </com.google.android.material.textfield.TextInputLayout>
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:orientation="horizontal">
+
+                        <com.google.android.material.textfield.TextInputLayout
+                            style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginEnd="6dp"
+                            android:layout_weight="1"
+                            android:hint="Branch"
+                            app:boxCornerRadiusBottomEnd="10dp"
+                            app:boxCornerRadiusBottomStart="10dp"
+                            app:boxCornerRadiusTopEnd="10dp"
+                            app:boxCornerRadiusTopStart="10dp">
+
+                            <com.google.android.material.textfield.TextInputEditText
+                                android:id="@+id/edit_branch"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:inputType="text|textNoSuggestions"
+                                android:maxLines="1"
+                                android:textColor="@color/text_primary"
+                                android:textSize="14sp" />
+                        </com.google.android.material.textfield.TextInputLayout>
+
+                        <com.google.android.material.textfield.TextInputLayout
+                            style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="6dp"
+                            android:layout_weight="2"
+                            android:hint="Access token"
+                            app:boxCornerRadiusBottomEnd="10dp"
+                            app:boxCornerRadiusBottomStart="10dp"
+                            app:boxCornerRadiusTopEnd="10dp"
+                            app:boxCornerRadiusTopStart="10dp"
+                            app:endIconMode="password_toggle">
+
+                            <com.google.android.material.textfield.TextInputEditText
+                                android:id="@+id/edit_token"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:inputType="textPassword"
+                                android:maxLines="1"
+                                android:textColor="@color/text_primary"
+                                android:textSize="14sp" />
+                        </com.google.android.material.textfield.TextInputLayout>
+                    </LinearLayout>
+
+                    <TextView
+                        android:id="@+id/text_last_sync"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:text="Never synced"
+                        android:textColor="@color/text_secondary"
+                        android:textSize="12sp" />
 
                     <!-- Multi-Threading Concurrency Selector -->
                     <LinearLayout
@@ -114,7 +184,7 @@
                             android:layout_width="0dp"
                             android:layout_height="wrap_content"
                             android:layout_weight="1"
-                            android:text="Multi-Thread Speed:"
+                            android:text="Parallel downloads:"
                             android:textColor="@color/text_primary"
                             android:textSize="13sp"
                             android:textStyle="bold" />
@@ -138,7 +208,7 @@
                             android:layout_height="wrap_content"
                             android:layout_marginEnd="6dp"
                             android:layout_weight="1"
-                            android:text="Test Ping"
+                            android:text="Test Connection"
                             android:textColor="@color/button_tonal_text"
                             android:textStyle="bold"
                             app:backgroundTint="@color/button_tonal_bg"
@@ -153,7 +223,7 @@
                             android:layout_height="wrap_content"
                             android:layout_marginStart="6dp"
                             android:layout_weight="1"
-                            android:text="Save URL"
+                            android:text="Save"
                             android:textColor="@color/text_primary"
                             android:textStyle="bold"
                             app:cornerRadius="10dp"
@@ -191,7 +261,7 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="2dp"
-                        android:text="Select any folder on device or cloud to sync"
+                        android:text="Pick a folder on this device or in the cloud"
                         android:textColor="@color/text_secondary"
                         android:textSize="12sp" />
 
@@ -282,7 +352,7 @@
                         android:layout_width="match_parent"
                         android:layout_height="48dp"
                         android:layout_marginTop="8dp"
-                        android:text="Two-Way Multi-Thread Sync"
+                        android:text="Two-Way Sync"
                         android:textColor="@android:color/white"
                         android:textStyle="bold"
                         app:backgroundTint="@color/primary"
@@ -318,10 +388,24 @@
                         android:textColor="@color/text_primary"
                         android:textStyle="bold" />
 
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/button_sync_all"
+                        style="@style/Widget.Material3.Button"
+                        android:layout_width="match_parent"
+                        android:layout_height="48dp"
+                        android:layout_marginTop="10dp"
+                        android:text="Sync All Folders"
+                        android:textColor="@android:color/white"
+                        android:textStyle="bold"
+                        app:backgroundTint="@color/primary"
+                        app:cornerRadius="10dp"
+                        app:icon="@drawable/ic_cloud_sync"
+                        app:iconTint="@android:color/white" />
+
                     <LinearLayout
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="10dp"
+                        android:layout_marginTop="8dp"
                         android:orientation="horizontal">
 
                         <com.google.android.material.button.MaterialButton
@@ -439,7 +523,7 @@
                     <ScrollView
                         android:id="@+id/scroll_log"
                         android:layout_width="match_parent"
-                        android:layout_height="150dp"
+                        android:layout_height="220dp"
                         android:layout_marginTop="10dp"
                         android:background="#0F172A"
                         android:padding="10dp">
@@ -449,20 +533,36 @@
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
                             android:fontFamily="monospace"
-                            android:text="[Ready] WebRecorder Cloud Hub initialized.\n"
+                            android:text=""
                             android:textColor="#38BDF8"
                             android:textSize="11sp" />
                     </ScrollView>
 
-                    <com.google.android.material.button.MaterialButton
-                        android:id="@+id/button_clear_log"
-                        style="@style/Widget.Material3.Button.TextButton"
-                        android:layout_width="wrap_content"
+                    <LinearLayout
+                        android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_gravity="end"
-                        android:text="Clear Log"
-                        android:textColor="@color/text_secondary"
-                        android:textSize="12sp" />
+                        android:gravity="end"
+                        android:orientation="horizontal">
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/button_cancel_sync"
+                            style="@style/Widget.Material3.Button.TextButton"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:enabled="false"
+                            android:text="Cancel Sync"
+                            android:textColor="@color/badge_corrupt_text"
+                            android:textSize="12sp" />
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/button_clear_log"
+                            style="@style/Widget.Material3.Button.TextButton"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Clear Log"
+                            android:textColor="@color/text_secondary"
+                            android:textSize="12sp" />
+                    </LinearLayout>
 
                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>

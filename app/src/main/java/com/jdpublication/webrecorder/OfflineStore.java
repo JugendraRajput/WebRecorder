@@ -22,6 +22,9 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.HashMap;
+import java.util.concurrent.ConcurrentHashMap;
 import java.io.IOException;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -42,8 +45,30 @@ public final class OfflineStore {
     private static final String KEY_LAST_DISPLAY_NAME = "last_display_name";
     private static final String KEY_LAST_INDEX = "last_index";
     private static final String DEFAULT_SERVER_URL = "https://webrecorder.jdworks.in";
-    private static final String METADATA_FILE_NAME = "metadata.json";
+    public static final String METADATA_FILE_NAME = "metadata.json";
     private static final String PENDING_DELETES_FILE_NAME = "pending_deletes.json";
+    private static final String KEY_GH_REPO = "github_repo";
+    private static final String KEY_GH_BRANCH = "github_branch";
+    private static final String KEY_GH_TOKEN = "github_token";
+    private static final String KEY_SYNC_THREADS = "sync_threads";
+    private static final String KEY_LAST_SYNC = "last_sync_at";
+    private static final String KEY_LAST_SYNC_SUMMARY = "last_sync_summary";
+    public static final String DEFAULT_GH_REPO = "JugendraRajput/webrecorder-data";
+
+    /** One lock per folder: every metadata / queue read-modify-write goes through it. */
+    private static final Map<String, Object> FOLDER_LOCKS = new ConcurrentHashMap<>();
+    /** In-memory git-hash cache per folder (name -> [size, mtime, sha]). */
+    private static final Map<String, Map<String, String[]>> HASH_CACHE = new ConcurrentHashMap<>();
+
+    static Object lockFor(String folderName) {
+        String key = sanitizeFolderName(folderName);
+        Object lock = FOLDER_LOCKS.get(key);
+        if (lock == null) {
+            FOLDER_LOCKS.putIfAbsent(key, new Object());
+            lock = FOLDER_LOCKS.get(key);
+        }
+        return lock;
+    }
 
     private OfflineStore() {
     }
@@ -128,6 +153,191 @@ public final class OfflineStore {
 
     public static String getServerBaseUrl(Context context) {
         return normalizeServerUrl(prefs(context).getString(KEY_SERVER_URL, DEFAULT_SERVER_URL));
+    }
+
+    // ───────────── Cloud (GitHub) settings ─────────────
+
+    public static void saveCloudSettings(Context context, String repo, String branch, String token, int threads) {
+        prefs(context).edit()
+                .putString(KEY_GH_REPO, repo == null ? "" : repo.trim())
+                .putString(KEY_GH_BRANCH, branch == null || branch.trim().isEmpty() ? "main" : branch.trim())
+                .putString(KEY_GH_TOKEN, token == null ? "" : token.trim())
+                .putInt(KEY_SYNC_THREADS, Math.max(1, Math.min(threads, 8)))
+                .apply();
+    }
+
+    public static String getCloudRepo(Context context) {
+        return prefs(context).getString(KEY_GH_REPO, DEFAULT_GH_REPO);
+    }
+
+    public static String getCloudBranch(Context context) {
+        return prefs(context).getString(KEY_GH_BRANCH, "main");
+    }
+
+    public static String getCloudToken(Context context) {
+        return prefs(context).getString(KEY_GH_TOKEN, "");
+    }
+
+    public static int getSyncThreads(Context context) {
+        return prefs(context).getInt(KEY_SYNC_THREADS, 4);
+    }
+
+    public static boolean isCloudConfigured(Context context) {
+        return !getCloudToken(context).isEmpty() && getCloudRepo(context).contains("/");
+    }
+
+    public static GitHubStorage createCloudStorage(Context context) {
+        return new GitHubStorage(getCloudRepo(context), getCloudBranch(context), getCloudToken(context));
+    }
+
+    public static void saveLastSync(Context context, String summary) {
+        prefs(context).edit()
+                .putLong(KEY_LAST_SYNC, System.currentTimeMillis())
+                .putString(KEY_LAST_SYNC_SUMMARY, summary == null ? "" : summary)
+                .apply();
+    }
+
+    public static long getLastSyncTime(Context context) {
+        return prefs(context).getLong(KEY_LAST_SYNC, 0L);
+    }
+
+    public static String getLastSyncSummary(Context context) {
+        return prefs(context).getString(KEY_LAST_SYNC_SUMMARY, "");
+    }
+
+    // ───────────── Sync state (base hashes + hash cache) ─────────────
+
+    private static File getSyncStateDir(Context context) {
+        File dir = new File(context.getFilesDir(), "sync_state");
+        if (!dir.exists()) {
+            //noinspection ResultOfMethodCallIgnored
+            dir.mkdirs();
+        }
+        return dir;
+    }
+
+    public static Map<String, String> readSyncBase(Context context, String folderName) {
+        Map<String, String> base = new HashMap<>();
+        File f = new File(getSyncStateDir(context), sanitizeFolderName(folderName) + ".base.json");
+        if (!f.isFile()) return base;
+        try {
+            JSONObject o = new JSONObject(new String(Files.readAllBytes(f.toPath()), StandardCharsets.UTF_8));
+            for (Iterator<String> it = o.keys(); it.hasNext(); ) {
+                String k = it.next();
+                base.put(k, o.optString(k));
+            }
+        } catch (Exception ignored) {
+        }
+        return base;
+    }
+
+    public static void writeSyncBase(Context context, String folderName, Map<String, String> base) {
+        File f = new File(getSyncStateDir(context), sanitizeFolderName(folderName) + ".base.json");
+        writeAtomically(f, new JSONObject(base).toString().getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static Map<String, String[]> hashCache(Context context, String folderName) {
+        String key = sanitizeFolderName(folderName);
+        Map<String, String[]> cache = HASH_CACHE.get(key);
+        if (cache != null) return cache;
+        Map<String, String[]> loaded = new ConcurrentHashMap<>();
+        File f = new File(getSyncStateDir(context), key + ".hash.json");
+        if (f.isFile()) {
+            try {
+                JSONObject o = new JSONObject(new String(Files.readAllBytes(f.toPath()), StandardCharsets.UTF_8));
+                for (Iterator<String> it = o.keys(); it.hasNext(); ) {
+                    String name = it.next();
+                    JSONArray a = o.optJSONArray(name);
+                    if (a != null && a.length() == 3) {
+                        loaded.put(name, new String[]{a.optString(0), a.optString(1), a.optString(2)});
+                    }
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        HASH_CACHE.putIfAbsent(key, loaded);
+        return HASH_CACHE.get(key);
+    }
+
+    /** Git blob hash of a local page, cached by size + modification time. */
+    public static String cachedHash(Context context, String folderName, File file) throws IOException {
+        Map<String, String[]> cache = hashCache(context, folderName);
+        String size = String.valueOf(file.length());
+        String mtime = String.valueOf(file.lastModified());
+        String[] entry = cache.get(file.getName());
+        if (entry != null && entry[0].equals(size) && entry[1].equals(mtime)) {
+            return entry[2];
+        }
+        String sha = GitHubStorage.gitBlobSha(file);
+        cache.put(file.getName(), new String[]{size, mtime, sha});
+        return sha;
+    }
+
+    public static void rememberHash(Context context, String folderName, File file, String sha) {
+        hashCache(context, folderName).put(file.getName(),
+                new String[]{String.valueOf(file.length()), String.valueOf(file.lastModified()), sha});
+    }
+
+    public static void flushHashCache(Context context, String folderName) {
+        Map<String, String[]> cache = hashCache(context, folderName);
+        JSONObject o = new JSONObject();
+        File dir = getFolderDirectory(context, folderName);
+        for (Map.Entry<String, String[]> e : cache.entrySet()) {
+            if (!new File(dir, e.getKey()).exists()) continue;
+            JSONArray a = new JSONArray();
+            a.put(e.getValue()[0]).put(e.getValue()[1]).put(e.getValue()[2]);
+            try {
+                o.put(e.getKey(), a);
+            } catch (Exception ignored) {
+            }
+        }
+        writeAtomically(new File(getSyncStateDir(context), sanitizeFolderName(folderName) + ".hash.json"),
+                o.toString().getBytes(StandardCharsets.UTF_8));
+    }
+
+    /** Merges two metadata maps; for each page the entry with the newest updated_at wins. */
+    public static JSONObject mergeMetadata(JSONObject local, JSONObject remote) {
+        JSONObject merged = new JSONObject();
+        try {
+            for (Iterator<String> it = remote.keys(); it.hasNext(); ) {
+                String k = it.next();
+                merged.put(k, remote.opt(k));
+            }
+            for (Iterator<String> it = local.keys(); it.hasNext(); ) {
+                String k = it.next();
+                JSONObject l = local.optJSONObject(k);
+                JSONObject r = remote.optJSONObject(k);
+                if (r == null || (l != null && l.optLong("updated_at", 0) >= r.optLong("updated_at", 0))) {
+                    merged.put(k, local.opt(k));
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return merged;
+    }
+
+    /** Writes via a temp file + rename so a crash never leaves a half-written file. */
+    static boolean writeAtomically(File target, byte[] bytes) {
+        File parent = target.getParentFile();
+        if (parent != null && !parent.exists() && !parent.mkdirs()) return false;
+        File tmp = new File(parent, target.getName() + ".tmp" + Thread.currentThread().getId());
+        try (FileOutputStream out = new FileOutputStream(tmp)) {
+            out.write(bytes);
+            out.getFD().sync();
+        } catch (Exception e) {
+            //noinspection ResultOfMethodCallIgnored
+            tmp.delete();
+            return false;
+        }
+        if (tmp.renameTo(target)) return true;
+        //noinspection ResultOfMethodCallIgnored
+        target.delete();
+        boolean ok = tmp.renameTo(target);
+        if (!ok) {
+            //noinspection ResultOfMethodCallIgnored
+            tmp.delete();
+        }
+        return ok;
     }
 
     public static File getRootDirectory(Context context) {
@@ -397,11 +607,13 @@ public final class OfflineStore {
             return new JSONObject();
         }
 
-        try {
-            String json = new String(Files.readAllBytes(metadataFile.toPath()), StandardCharsets.UTF_8);
-            return new JSONObject(json);
-        } catch (Exception ignored) {
-            return new JSONObject();
+        synchronized (lockFor(folderName)) {
+            try {
+                String json = new String(Files.readAllBytes(metadataFile.toPath()), StandardCharsets.UTF_8);
+                return new JSONObject(json);
+            } catch (Exception ignored) {
+                return new JSONObject();
+            }
         }
     }
 
@@ -416,9 +628,11 @@ public final class OfflineStore {
         }
 
         File metadataFile = getMetadataFile(context, folderName);
-        try {
-            Files.write(metadataFile.toPath(), metadata.toString(2).getBytes(StandardCharsets.UTF_8));
-        } catch (Exception ignored) {
+        synchronized (lockFor(folderName)) {
+            try {
+                writeAtomically(metadataFile, metadata.toString(2).getBytes(StandardCharsets.UTF_8));
+            } catch (Exception ignored) {
+            }
         }
     }
 
@@ -433,8 +647,10 @@ public final class OfflineStore {
             String json = new String(Files.readAllBytes(queueFile.toPath()), StandardCharsets.UTF_8);
             JSONArray array = new JSONArray(json);
             for (int i = 0; i < array.length(); i++) {
-                String name = array.optString(i, "").trim();
-                if (!name.isEmpty()) {
+                JSONObject obj = array.optJSONObject(i);
+                String name = obj != null ? obj.optString("name", "") : array.optString(i, "");
+                name = name.trim();
+                if (!name.isEmpty() && !items.contains(name)) {
                     items.add(name);
                 }
             }
@@ -444,14 +660,24 @@ public final class OfflineStore {
     }
 
     public static void queuePendingDeletion(Context context, String folderName, String offlineFileName) {
+        queuePendingDeletion(context, folderName, offlineFileName, false);
+    }
+
+    /** Queues a cloud deletion; "moderated" marks removals done by the content filter. */
+    public static void queuePendingDeletion(Context context, String folderName, String offlineFileName, boolean moderated) {
         if (folderName == null || folderName.trim().isEmpty() || offlineFileName == null || offlineFileName.trim().isEmpty()) {
             return;
         }
-
-        List<String> current = getPendingDeletionNames(context, folderName);
-        if (!current.contains(offlineFileName)) {
-            current.add(offlineFileName);
-            writePendingDeletionNames(context, folderName, current);
+        synchronized (lockFor(folderName)) {
+            List<String> current = getPendingDeletionNames(context, folderName);
+            if (!current.contains(offlineFileName)) {
+                current.add(offlineFileName);
+            }
+            List<String> moderatedNames = getModeratedNames(context, folderName);
+            if (moderated && !moderatedNames.contains(offlineFileName)) {
+                moderatedNames.add(offlineFileName);
+            }
+            writePendingDeletionNames(context, folderName, current, moderatedNames);
         }
     }
 
@@ -459,11 +685,34 @@ public final class OfflineStore {
         if (folderName == null || folderName.trim().isEmpty() || offlineFileName == null || offlineFileName.trim().isEmpty()) {
             return;
         }
-
-        List<String> current = getPendingDeletionNames(context, folderName);
-        if (current.remove(offlineFileName)) {
-            writePendingDeletionNames(context, folderName, current);
+        synchronized (lockFor(folderName)) {
+            List<String> current = getPendingDeletionNames(context, folderName);
+            List<String> moderatedNames = getModeratedNames(context, folderName);
+            boolean changed = current.remove(offlineFileName);
+            changed |= moderatedNames.remove(offlineFileName);
+            if (changed) {
+                writePendingDeletionNames(context, folderName, current, moderatedNames);
+            }
         }
+    }
+
+    public static boolean isModeratedDeletion(Context context, String folderName, String offlineFileName) {
+        return getModeratedNames(context, folderName).contains(offlineFileName);
+    }
+
+    private static List<String> getModeratedNames(Context context, String folderName) {
+        List<String> items = new ArrayList<>();
+        File queueFile = getPendingDeletesFile(context, folderName);
+        if (!queueFile.isFile()) return items;
+        try {
+            JSONArray array = new JSONArray(new String(Files.readAllBytes(queueFile.toPath()), StandardCharsets.UTF_8));
+            for (int i = 0; i < array.length(); i++) {
+                JSONObject obj = array.optJSONObject(i);
+                if (obj != null && obj.optBoolean("moderated", false)) items.add(obj.optString("name"));
+            }
+        } catch (Exception ignored) {
+        }
+        return items;
     }
 
     public static void upsertMetadataEntry(Context context, String folderName, UrlData data) {
@@ -478,8 +727,9 @@ public final class OfflineStore {
             return;
         }
 
+        synchronized (lockFor(folderName)) {
         JSONObject metadata = readFolderMetadata(context, folderName);
-        
+
         String legacyHtmlName = toLegacyHtmlName(offlineFileName);
         if (!legacyHtmlName.equals(offlineFileName)) {
             metadata.remove(legacyHtmlName);
@@ -494,14 +744,22 @@ public final class OfflineStore {
             entry = new JSONObject();
         }
 
+        String newUrl = originalUrl == null ? "" : originalUrl.trim();
+        String newTitle = title == null ? stripExtension(offlineFileName) : title.trim();
+        if (newUrl.equals(entry.optString("original_url", null))
+                && newTitle.equals(entry.optString("title", null))
+                && rowIndex == entry.optInt("row_index", Integer.MIN_VALUE)) {
+            return; // nothing changed: avoid rewriting the file on every page view
+        }
         try {
-            entry.put("original_url", originalUrl == null ? "" : originalUrl.trim());
-            entry.put("title", title == null ? stripExtension(offlineFileName) : title.trim());
+            entry.put("original_url", newUrl);
+            entry.put("title", newTitle);
             entry.put("row_index", rowIndex);
             entry.put("updated_at", System.currentTimeMillis() / 1000L);
             metadata.put(offlineFileName, entry);
             saveFolderMetadata(context, folderName, metadata);
         } catch (Exception ignored) {
+        }
         }
     }
 
@@ -510,9 +768,12 @@ public final class OfflineStore {
             return;
         }
 
-        JSONObject metadata = readFolderMetadata(context, folderName);
-        metadata.remove(offlineFileName);
-        saveFolderMetadata(context, folderName, metadata);
+        synchronized (lockFor(folderName)) {
+            JSONObject metadata = readFolderMetadata(context, folderName);
+            if (metadata.remove(offlineFileName) != null) {
+                saveFolderMetadata(context, folderName, metadata);
+            }
+        }
     }
 
     public static String prettifyFolderName(String folderName) {
@@ -604,7 +865,7 @@ public final class OfflineStore {
         return prefs(context).getString(KEY_LAST_EXCEL_URI, "");
     }
 
-    private static void writePendingDeletionNames(Context context, String folderName, List<String> names) {
+    private static void writePendingDeletionNames(Context context, String folderName, List<String> names, List<String> moderatedNames) {
         File folderDirectory = getFolderDirectory(context, folderName);
         if (!folderDirectory.exists() && !folderDirectory.mkdirs()) {
             return;
@@ -621,11 +882,16 @@ public final class OfflineStore {
 
         JSONArray array = new JSONArray();
         for (String name : names) {
-            array.put(name);
+            JSONObject o = new JSONObject();
+            try {
+                o.put("name", name);
+                o.put("moderated", moderatedNames.contains(name));
+            } catch (Exception ignored) {
+            }
+            array.put(o);
         }
-
         try {
-            Files.write(queueFile.toPath(), array.toString(2).getBytes(StandardCharsets.UTF_8));
+            writeAtomically(queueFile, array.toString(2).getBytes(StandardCharsets.UTF_8));
         } catch (Exception ignored) {
         }
     }
@@ -726,21 +992,30 @@ public final class OfflineStore {
                 return new ValidationResult(ValidationResult.Status.CORRUPTED, "Could not read file data", length, isHtml, isMht);
             }
             String snippet = new String(buffer, 0, read, StandardCharsets.UTF_8).toLowerCase(Locale.US);
+            // Only inspect the page title / subject so article text (e.g. a film called
+            // "Access Denied") never marks a good page as broken.
+            String pageTitle = "";
+            Matcher tm = Pattern.compile("<title[^>]*>([^<]{0,200})</title>").matcher(snippet);
+            if (tm.find()) {
+                pageTitle = tm.group(1).trim();
+            } else {
+                Matcher sm = Pattern.compile("subject:\\s*([^\\r\\n]{0,200})").matcher(snippet);
+                if (sm.find()) pageTitle = sm.group(1).trim();
+            }
 
-            if (snippet.contains("<title>404 not found</title>")
-                    || snippet.contains("<title>404 - not found")
-                    || snippet.contains("<h1>404 not found</h1>")
-                    || snippet.contains("404 page not found")
+            if (pageTitle.startsWith("404") || pageTitle.contains("404 not found") || pageTitle.contains("page not found")
                     || snippet.contains("wikipedia does not have an article with this exact name")) {
                 return new ValidationResult(ValidationResult.Status.CORRUPTED, "404 Not Found error page", length, isHtml, isMht);
             }
-            if (snippet.contains("<title>403 forbidden</title>") || snippet.contains("403 forbidden") || snippet.contains("access denied")) {
+            if (pageTitle.startsWith("403") || pageTitle.equals("access denied") || pageTitle.contains("403 forbidden")) {
                 return new ValidationResult(ValidationResult.Status.CORRUPTED, "403 Forbidden / Access Denied", length, isHtml, isMht);
             }
-            if (snippet.contains("cloudflare ray id") || snippet.contains("attention required! | cloudflare")) {
+            if (pageTitle.contains("attention required") || pageTitle.contains("just a moment")
+                    || (length < 30000 && snippet.contains("cloudflare ray id"))) {
                 return new ValidationResult(ValidationResult.Status.CORRUPTED, "Cloudflare Challenge / Blocked", length, isHtml, isMht);
             }
-            if (snippet.contains("<title>502 bad gateway</title>") || snippet.contains("<title>503 service unavailable</title>")) {
+            if (pageTitle.startsWith("502") || pageTitle.startsWith("503") || pageTitle.startsWith("504")
+                    || pageTitle.contains("bad gateway") || pageTitle.contains("service unavailable")) {
                 return new ValidationResult(ValidationResult.Status.CORRUPTED, "Server Gateway / 503 error", length, isHtml, isMht);
             }
 

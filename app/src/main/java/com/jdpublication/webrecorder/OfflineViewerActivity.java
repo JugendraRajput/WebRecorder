@@ -203,19 +203,30 @@ public class OfflineViewerActivity extends AppCompatActivity {
             // True MHTML: WebView handles these natively with embedded resources
             webView.loadUrl("file://" + file.getAbsolutePath());
         } else {
-            try {
-                String html = OfflineStore.readOfflineHtml(file);
-                // Inject fallback CSS for offline display — covers cases where
-                // external stylesheets can't load since network is blocked
-                html = injectOfflineFallbackCss(html);
-                // Strip external link/script refs that will never load offline
-                html = stripExternalResources(html);
-                String baseUrl = "file://" + file.getParentFile().getAbsolutePath() + "/";
-                String history = (originalUrl != null && !originalUrl.isEmpty()) ? originalUrl : baseUrl;
-                webView.loadDataWithBaseURL(baseUrl, html, "text/html", "UTF-8", history);
-            } catch (Exception e) {
-                webView.loadUrl("file://" + file.getAbsolutePath());
-            }
+            progressBar.setVisibility(View.VISIBLE);
+            new Thread(() -> {
+                String html = null;
+                try {
+                    html = OfflineStore.readOfflineHtml(file);
+                    // Fallback CSS keeps pages readable when external stylesheets cannot load offline
+                    html = injectOfflineFallbackCss(html);
+                    // Strip external link/script refs that will never load offline
+                    html = stripExternalResources(html);
+                } catch (Exception | OutOfMemoryError e) {
+                    html = null;
+                }
+                final String finalHtml = html;
+                runOnUiThread(() -> {
+                    if (isFinishing() || isDestroyed()) return;
+                    if (finalHtml == null) {
+                        webView.loadUrl("file://" + file.getAbsolutePath());
+                        return;
+                    }
+                    String baseUrl = "file://" + file.getParentFile().getAbsolutePath() + "/";
+                    String history = (originalUrl != null && !originalUrl.isEmpty()) ? originalUrl : baseUrl;
+                    webView.loadDataWithBaseURL(baseUrl, finalHtml, "text/html", "UTF-8", history);
+                });
+            }).start();
         }
     }
 
@@ -271,7 +282,9 @@ public class OfflineViewerActivity extends AppCompatActivity {
         Intent intent = new Intent(this, MainActivity.class);
         intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
         intent.putExtra("extra_folder_name", folderName);
-        intent.putExtra("extra_target_index", Math.max(rowIndex, 0));
+        if (filePath != null && !filePath.isEmpty()) {
+            intent.putExtra("extra_file_name", new File(filePath).getName());
+        }
         startActivity(intent);
         finish();
     }
@@ -365,6 +378,15 @@ public class OfflineViewerActivity extends AppCompatActivity {
                 .setMessage(info)
                 .setPositiveButton("Close", null)
                 .show();
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (webView != null) {
+            webView.stopLoading();
+            webView.destroy();
+        }
+        super.onDestroy();
     }
 
     private void shareFile() {
