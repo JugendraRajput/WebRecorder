@@ -35,11 +35,11 @@
             android:layout_height="wrap_content"
             android:orientation="vertical">
 
-            <!-- Server Configuration Card -->
+            <!-- Server Connection Card -->
             <com.google.android.material.card.MaterialCardView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginBottom="16dp"
+                android:layout_marginBottom="14dp"
                 app:cardBackgroundColor="@color/card_background"
                 app:cardCornerRadius="16dp"
                 app:cardElevation="2dp"
@@ -50,95 +50,123 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:orientation="vertical"
-                    android:padding="20dp">
+                    android:padding="16dp">
 
-                    <TextView
-                        android:layout_width="wrap_content"
+                    <LinearLayout
+                        android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:text="@string/server_base_url"
-                        android:textAppearance="@style/TextAppearance.Material3.TitleMedium"
-                        android:textColor="@color/text_primary"
-                        android:textStyle="bold" />
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
+                        <TextView
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="Cloud Sync Server"
+                            android:textAppearance="@style/TextAppearance.Material3.TitleMedium"
+                            android:textColor="@color/text_primary"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:id="@+id/text_server_status_badge"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:background="@drawable/bg_pill_counter"
+                            android:paddingHorizontal="10dp"
+                            android:paddingVertical="4dp"
+                            android:text="Offline"
+                            android:textColor="@color/text_secondary"
+                            android:textSize="12sp"
+                            android:textStyle="bold" />
+                    </LinearLayout>
 
                     <com.google.android.material.textfield.TextInputLayout
                         style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="12dp"
-                        app:boxCornerRadiusBottomEnd="12dp"
-                        app:boxCornerRadiusBottomStart="12dp"
-                        app:boxCornerRadiusTopEnd="12dp"
-                        app:boxCornerRadiusTopStart="12dp">
+                        android:layout_marginTop="10dp"
+                        app:boxCornerRadiusBottomEnd="10dp"
+                        app:boxCornerRadiusBottomStart="10dp"
+                        app:boxCornerRadiusTopEnd="10dp"
+                        app:boxCornerRadiusTopStart="10dp">
 
                         <com.google.android.material.textfield.TextInputEditText
                             android:id="@+id/edit_server_url"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
-                            android:hint="https://webrecorder.jdworks.in"
+                            android:hint="Server URL (e.g. https://webrecorder.jdworks.in)"
                             android:inputType="textUri"
-                            android:text="https://webrecorder.jdworks.in"
-                            android:textColor="@color/text_primary" />
+                            android:textColor="@color/text_primary"
+                            android:textSize="14sp" />
                     </com.google.android.material.textfield.TextInputLayout>
 
-                    <com.google.android.material.button.MaterialButton
-                        android:id="@+id/button_save_server"
-                        style="@style/Widget.Material3.Button.TonalButton"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="12dp"
-                        android:text="@string/save_server_url"
-                        android:textColor="@color/button_tonal_text"
-                        android:textStyle="bold"
-                        app:backgroundTint="@color/button_tonal_bg"
-                        app:cornerRadius="10dp" />
-
-                </LinearLayout>
-            </com.google.android.material.card.MaterialCardView>
-
-            <!-- Sync Summary & Status Card -->
-            <com.google.android.material.card.MaterialCardView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginBottom="16dp"
-                app:cardBackgroundColor="@color/card_background"
-                app:cardCornerRadius="16dp"
-                app:cardElevation="2dp"
-                app:strokeColor="@color/card_stroke"
-                app:strokeWidth="1dp">
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="vertical"
-                    android:padding="20dp">
-
-                    <TextView
-                        android:id="@+id/text_current_list"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:textAppearance="@style/TextAppearance.Material3.TitleMedium"
-                        android:textColor="@color/text_primary"
-                        android:textStyle="bold"
-                        tools:text="Current list: Movie_List_2000" />
-
-                    <TextView
-                        android:id="@+id/text_counts"
+                    <!-- Multi-Threading Concurrency Selector -->
+                    <LinearLayout
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="10dp"
-                        android:lineSpacingExtra="4dp"
-                        android:textAppearance="@style/TextAppearance.Material3.BodyMedium"
-                        android:textColor="@color/text_secondary"
-                        tools:text="Excel rows: 216&#10;Local offline files: 150&#10;Server files: 216&#10;Server folders: 8" />
+                        android:background="@drawable/bg_pill_counter"
+                        android:gravity="center_vertical"
+                        android:paddingHorizontal="10dp"
+                        android:paddingVertical="4dp">
 
+                        <TextView
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="Multi-Thread Speed:"
+                            android:textColor="@color/text_primary"
+                            android:textSize="13sp"
+                            android:textStyle="bold" />
+
+                        <Spinner
+                            android:id="@+id/spinner_sync_threads"
+                            android:layout_width="wrap_content"
+                            android:layout_height="36dp" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:orientation="horizontal">
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/button_test_connection"
+                            style="@style/Widget.Material3.Button.TonalButton"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginEnd="6dp"
+                            android:layout_weight="1"
+                            android:text="Test Ping"
+                            android:textColor="@color/button_tonal_text"
+                            android:textStyle="bold"
+                            app:backgroundTint="@color/button_tonal_bg"
+                            app:cornerRadius="10dp"
+                            app:icon="@drawable/ic_cloud_sync"
+                            app:iconTint="@color/button_tonal_text" />
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/button_save_server"
+                            style="@style/Widget.Material3.Button.OutlinedButton"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="6dp"
+                            android:layout_weight="1"
+                            android:text="Save URL"
+                            android:textColor="@color/text_primary"
+                            android:textStyle="bold"
+                            app:cornerRadius="10dp"
+                            app:strokeColor="@color/card_stroke" />
+                    </LinearLayout>
                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
 
-            <!-- Sync Operations Card -->
+            <!-- Folder Sync Hub Card -->
             <com.google.android.material.card.MaterialCardView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginBottom="16dp"
+                android:layout_marginBottom="14dp"
                 app:cardBackgroundColor="@color/card_background"
                 app:cardCornerRadius="16dp"
                 app:cardElevation="2dp"
@@ -149,61 +177,295 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:orientation="vertical"
-                    android:padding="20dp">
+                    android:padding="16dp">
 
-                    <com.google.android.material.button.MaterialButton
-                        android:id="@+id/button_refresh_status"
-                        style="@style/Widget.Material3.Button.OutlinedButton"
-                        android:layout_width="match_parent"
-                        android:layout_height="52dp"
-                        android:text="@string/refresh_sync_status"
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Folder Sync Hub"
+                        android:textAppearance="@style/TextAppearance.Material3.TitleMedium"
                         android:textColor="@color/text_primary"
-                        android:textStyle="bold"
-                        app:cornerRadius="12dp"
-                        app:icon="@drawable/ic_cloud_sync"
-                        app:iconTint="@color/text_primary"
-                        app:strokeColor="@color/card_stroke" />
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
+                        android:text="Select any folder on device or cloud to sync"
+                        android:textColor="@color/text_secondary"
+                        android:textSize="12sp" />
+
+                    <!-- Folder Picker Spinner -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:background="@drawable/bg_pill_counter"
+                        android:gravity="center_vertical"
+                        android:padding="4dp">
+
+                        <Spinner
+                            android:id="@+id/spinner_folders"
+                            android:layout_width="match_parent"
+                            android:layout_height="44dp" />
+                    </LinearLayout>
+
+                    <!-- Selected Folder Stats Details -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:background="@drawable/bg_badge_valid"
+                        android:orientation="vertical"
+                        android:padding="12dp">
+
+                        <TextView
+                            android:id="@+id/text_selected_folder_title"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Selected Folder Details"
+                            android:textColor="@color/badge_valid_text"
+                            android:textSize="13sp"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:id="@+id/text_selected_folder_stats"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="4dp"
+                            android:text="Local files: 0 | Cloud files: 0 | Status: Checking..."
+                            android:textColor="@color/text_primary"
+                            android:textSize="12sp" />
+                    </LinearLayout>
+
+                    <!-- Per-Folder Action Buttons -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:orientation="horizontal">
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/button_upload_selected"
+                            style="@style/Widget.Material3.Button.TonalButton"
+                            android:layout_width="0dp"
+                            android:layout_height="48dp"
+                            android:layout_marginEnd="4dp"
+                            android:layout_weight="1"
+                            android:text="Upload"
+                            android:textColor="@color/button_tonal_text"
+                            android:textStyle="bold"
+                            app:backgroundTint="@color/button_tonal_bg"
+                            app:cornerRadius="10dp"
+                            app:icon="@drawable/ic_upload"
+                            app:iconTint="@color/button_tonal_text" />
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/button_download_selected"
+                            style="@style/Widget.Material3.Button.TonalButton"
+                            android:layout_width="0dp"
+                            android:layout_height="48dp"
+                            android:layout_marginStart="4dp"
+                            android:layout_weight="1"
+                            android:text="Download"
+                            android:textColor="@color/button_tonal_text"
+                            android:textStyle="bold"
+                            app:backgroundTint="@color/button_tonal_bg"
+                            app:cornerRadius="10dp"
+                            app:icon="@drawable/ic_download"
+                            app:iconTint="@color/button_tonal_text" />
+                    </LinearLayout>
 
                     <com.google.android.material.button.MaterialButton
-                        android:id="@+id/button_sync_current"
+                        android:id="@+id/button_sync_selected"
                         style="@style/Widget.Material3.Button"
                         android:layout_width="match_parent"
-                        android:layout_height="52dp"
-                        android:layout_marginTop="12dp"
-                        android:text="@string/sync_current_list"
+                        android:layout_height="48dp"
+                        android:layout_marginTop="8dp"
+                        android:text="Two-Way Multi-Thread Sync"
                         android:textColor="@android:color/white"
                         android:textStyle="bold"
-                        app:backgroundTint="@color/color_record"
-                        app:cornerRadius="12dp"
+                        app:backgroundTint="@color/primary"
+                        app:cornerRadius="10dp"
                         app:icon="@drawable/ic_cloud_sync"
                         app:iconTint="@android:color/white" />
-
-                    <com.google.android.material.button.MaterialButton
-                        android:id="@+id/button_sync_all"
-                        style="@style/Widget.Material3.Button.TonalButton"
-                        android:layout_width="match_parent"
-                        android:layout_height="52dp"
-                        android:layout_marginTop="12dp"
-                        android:text="@string/download_all_server_folders"
-                        android:textColor="@color/button_tonal_text"
-                        android:textStyle="bold"
-                        app:backgroundTint="@color/button_tonal_bg"
-                        app:cornerRadius="12dp" />
 
                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
 
-            <!-- Status Output Log -->
-            <TextView
-                android:id="@+id/text_sync_status"
+            <!-- Global Cloud Sync Operations -->
+            <com.google.android.material.card.MaterialCardView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:background="@drawable/bg_pill_counter"
-                android:padding="16dp"
-                android:textAppearance="@style/TextAppearance.Material3.BodySmall"
-                android:textColor="@color/text_primary"
-                tools:text="Status messages will appear here." />
+                android:layout_marginBottom="14dp"
+                app:cardBackgroundColor="@color/card_background"
+                app:cardCornerRadius="16dp"
+                app:cardElevation="2dp"
+                app:strokeColor="@color/card_stroke"
+                app:strokeWidth="1dp">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:padding="16dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Global Cloud Operations"
+                        android:textAppearance="@style/TextAppearance.Material3.TitleMedium"
+                        android:textColor="@color/text_primary"
+                        android:textStyle="bold" />
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:orientation="horizontal">
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/button_download_all"
+                            style="@style/Widget.Material3.Button.OutlinedButton"
+                            android:layout_width="0dp"
+                            android:layout_height="48dp"
+                            android:layout_marginEnd="4dp"
+                            android:layout_weight="1"
+                            android:text="Download All"
+                            android:textColor="@color/text_primary"
+                            android:textStyle="bold"
+                            app:cornerRadius="10dp"
+                            app:icon="@drawable/ic_download"
+                            app:iconTint="@color/text_primary"
+                            app:strokeColor="@color/card_stroke" />
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/button_upload_all"
+                            style="@style/Widget.Material3.Button.OutlinedButton"
+                            android:layout_width="0dp"
+                            android:layout_height="48dp"
+                            android:layout_marginStart="4dp"
+                            android:layout_weight="1"
+                            android:text="Upload All"
+                            android:textColor="@color/text_primary"
+                            android:textStyle="bold"
+                            app:cornerRadius="10dp"
+                            app:icon="@drawable/ic_upload"
+                            app:iconTint="@color/text_primary"
+                            app:strokeColor="@color/card_stroke" />
+                    </LinearLayout>
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/button_open_offline_manager"
+                        style="@style/Widget.Material3.Button.TonalButton"
+                        android:layout_width="match_parent"
+                        android:layout_height="48dp"
+                        android:layout_marginTop="8dp"
+                        android:text="Open Offline Manager &amp; Validator"
+                        android:textColor="@color/button_tonal_text"
+                        android:textStyle="bold"
+                        app:backgroundTint="@color/button_tonal_bg"
+                        app:cornerRadius="10dp"
+                        app:icon="@drawable/ic_folder"
+                        app:iconTint="@color/button_tonal_text" />
+
+                </LinearLayout>
+            </com.google.android.material.card.MaterialCardView>
+
+            <!-- Real-time Progress & Activity Log -->
+            <com.google.android.material.card.MaterialCardView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="24dp"
+                app:cardBackgroundColor="@color/card_background"
+                app:cardCornerRadius="16dp"
+                app:cardElevation="2dp"
+                app:strokeColor="@color/card_stroke"
+                app:strokeWidth="1dp">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:padding="16dp">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
+                        <TextView
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="Sync Terminal Log"
+                            android:textAppearance="@style/TextAppearance.Material3.TitleSmall"
+                            android:textColor="@color/text_primary"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:id="@+id/text_progress_percentage"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Ready"
+                            android:textColor="@color/text_secondary"
+                            android:textSize="12sp"
+                            android:textStyle="bold" />
+                    </LinearLayout>
+
+                    <com.google.android.material.progressindicator.LinearProgressIndicator
+                        android:id="@+id/sync_progress_bar"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:indeterminate="false"
+                        android:max="100"
+                        android:progress="0"
+                        app:indicatorColor="@color/primary"
+                        app:trackColor="@color/card_stroke"
+                        app:trackCornerRadius="4dp"
+                        app:trackThickness="6dp" />
+
+                    <TextView
+                        android:id="@+id/text_sync_status"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="6dp"
+                        android:text="Idle. Ready to sync."
+                        android:textColor="@color/text_secondary"
+                        android:textSize="12sp" />
+
+                    <ScrollView
+                        android:id="@+id/scroll_log"
+                        android:layout_width="match_parent"
+                        android:layout_height="150dp"
+                        android:layout_marginTop="10dp"
+                        android:background="#0F172A"
+                        android:padding="10dp">
+
+                        <TextView
+                            android:id="@+id/text_sync_log"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:fontFamily="monospace"
+                            android:text="[Ready] WebRecorder Cloud Hub initialized.\n"
+                            android:textColor="#38BDF8"
+                            android:textSize="11sp" />
+                    </ScrollView>
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/button_clear_log"
+                        style="@style/Widget.Material3.Button.TextButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_gravity="end"
+                        android:text="Clear Log"
+                        android:textColor="@color/text_secondary"
+                        android:textSize="12sp" />
+
+                </LinearLayout>
+            </com.google.android.material.card.MaterialCardView>
 
         </LinearLayout>
     </ScrollView>

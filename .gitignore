@@ -13,3 +13,10 @@
 .externalNativeBuild
 .cxx
 local.properties
+
+# Tools / IDE
+.idea/
+node_modules/
+__pycache__/
+*.pyc
+tools/app_data_backup.tar

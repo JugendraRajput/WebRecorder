@@ -1,0 +1,173 @@
+<?xml version="1.0" encoding="utf-8"?>
+<com.google.android.material.card.MaterialCardView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginHorizontal="12dp"
+    android:layout_marginVertical="5dp"
+    app:cardBackgroundColor="@color/card_background"
+    app:cardCornerRadius="12dp"
+    app:cardElevation="1dp"
+    app:strokeColor="@color/card_stroke"
+    app:strokeWidth="1dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="12dp">
+
+        <!-- Header: Status Badge, Title, Index -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/text_item_badge"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:background="@drawable/bg_badge_valid"
+                android:paddingHorizontal="8dp"
+                android:paddingVertical="2dp"
+                android:text="VALID"
+                android:textColor="@color/badge_valid_text"
+                android:textSize="10sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/text_item_index"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="6dp"
+                android:textColor="@color/text_tertiary"
+                android:textSize="11sp"
+                android:textStyle="bold"
+                tools:text="#142" />
+
+            <TextView
+                android:id="@+id/text_item_folder"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:layout_weight="1"
+                android:ellipsize="end"
+                android:gravity="end"
+                android:singleLine="true"
+                android:textColor="@color/text_tertiary"
+                android:textSize="11sp"
+                tools:text="Movie_List_2000" />
+        </LinearLayout>
+
+        <!-- Movie Title -->
+        <TextView
+            android:id="@+id/text_item_title"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textAppearance="@style/TextAppearance.Material3.TitleSmall"
+            android:textColor="@color/text_primary"
+            android:textStyle="bold"
+            tools:text="Gladiator (2000 film)" />
+
+        <!-- Web URL -->
+        <TextView
+            android:id="@+id/text_item_url"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:ellipsize="middle"
+            android:singleLine="true"
+            android:textColor="@color/text_secondary"
+            android:textSize="11sp"
+            tools:text="https://en.wikipedia.org/wiki/Gladiator_(2000_film)" />
+
+        <!-- Details Bar: Size, Modified, Status reason -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/text_item_file_info"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:textColor="@color/text_tertiary"
+                android:textSize="11sp"
+                tools:text="285 KB • HTML • 2026-09-30" />
+
+            <TextView
+                android:id="@+id/text_item_reason"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textColor="@color/badge_valid_text"
+                android:textSize="11sp"
+                android:textStyle="italic"
+                tools:text="Valid HTML document" />
+        </LinearLayout>
+
+        <!-- Action Buttons -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:gravity="end"
+            android:orientation="horizontal">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/button_item_delete"
+                style="@style/Widget.Material3.Button.TextButton"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:paddingHorizontal="8dp"
+                android:paddingVertical="0dp"
+                android:text="Delete"
+                android:textColor="@color/color_record"
+                android:textSize="11sp"
+                app:icon="@drawable/ic_delete"
+                app:iconSize="14dp"
+                app:iconTint="@color/color_record" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/button_item_recorder"
+                style="@style/Widget.Material3.Button.TonalButton"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:layout_marginStart="6dp"
+                android:paddingHorizontal="10dp"
+                android:paddingVertical="0dp"
+                android:text="In Recorder"
+                android:textColor="@color/button_tonal_text"
+                android:textSize="11sp"
+                android:textStyle="bold"
+                app:backgroundTint="@color/button_tonal_bg"
+                app:cornerRadius="8dp"
+                app:icon="@drawable/ic_open_in_new"
+                app:iconSize="14dp"
+                app:iconTint="@color/button_tonal_text" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/button_item_view"
+                style="@style/Widget.Material3.Button"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:layout_marginStart="6dp"
+                android:paddingHorizontal="12dp"
+                android:paddingVertical="0dp"
+                android:text="View Page"
+                android:textColor="@android:color/white"
+                android:textSize="11sp"
+                android:textStyle="bold"
+                app:backgroundTint="@color/primary"
+                app:cornerRadius="8dp"
+                app:icon="@drawable/ic_visibility"
+                app:iconSize="14dp"
+                app:iconTint="@android:color/white" />
+        </LinearLayout>
+    </LinearLayout>
+</com.google.android.material.card.MaterialCardView>

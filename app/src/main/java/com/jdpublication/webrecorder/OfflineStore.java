@@ -11,6 +11,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -21,6 +22,9 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
+import java.io.IOException;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public final class OfflineStore {
 
@@ -314,51 +318,76 @@ public final class OfflineStore {
 
     public static List<UrlData> loadFolderEntries(Context context, String folderName) {
         List<UrlData> items = new ArrayList<>();
-        JSONObject metadata = readFolderMetadata(context, folderName);
-        List<FolderItem> pendingItems = new ArrayList<>();
-
-        Iterator<String> keys = metadata.keys();
-        while (keys.hasNext()) {
-            String offlineFileName = keys.next();
-            JSONObject entry = metadata.optJSONObject(offlineFileName);
-            if (entry == null) {
-                continue;
-            }
-            String title = entry.optString("title", "").trim();
-            if (title.isEmpty()) {
-                title = stripExtension(offlineFileName);
-            }
-            String originalUrl = entry.optString("original_url", "").trim();
-            int rowIndex = entry.optInt("row_index", Integer.MAX_VALUE);
-            if (rowIndex < 0) {
-                rowIndex = Integer.MAX_VALUE;
-            }
-            pendingItems.add(new FolderItem(rowIndex, title, originalUrl, offlineFileName));
-        }
-
-        if (!pendingItems.isEmpty()) {
-            pendingItems.sort((first, second) -> {
-                int rowCompare = Integer.compare(first.rowIndex, second.rowIndex);
-                if (rowCompare != 0) {
-                    return rowCompare;
-                }
-                return first.title.compareToIgnoreCase(second.title);
-            });
-
-            for (int i = 0; i < pendingItems.size(); i++) {
-                FolderItem item = pendingItems.get(i);
-                int resolvedRowIndex = item.rowIndex == Integer.MAX_VALUE ? (i + 1) : item.rowIndex;
-                items.add(new UrlData(resolvedRowIndex, item.title, item.originalUrl, item.offlineFileName));
-            }
+        List<File> htmlFiles = listHtmlFiles(context, folderName);
+        if (htmlFiles.isEmpty()) {
             return items;
         }
 
-        List<File> htmlFiles = listHtmlFiles(context, folderName);
-        htmlFiles.sort((first, second) -> first.getName().compareToIgnoreCase(second.getName()));
-        for (int i = 0; i < htmlFiles.size(); i++) {
-            String fileName = htmlFiles.get(i).getName();
-            items.add(new UrlData(i + 1, stripExtension(fileName), "", fileName));
+        JSONObject metadata = readFolderMetadata(context, folderName);
+        boolean metadataChanged = false;
+        List<FolderItem> pendingItems = new ArrayList<>();
+
+        for (File file : htmlFiles) {
+            String fileName = file.getName();
+            JSONObject entry = metadata.optJSONObject(fileName);
+
+            String title = "";
+            String originalUrl = "";
+            int rowIndex = Integer.MAX_VALUE;
+
+            if (entry != null) {
+                title = entry.optString("title", "").trim();
+                originalUrl = entry.optString("original_url", "").trim();
+                int idx = entry.optInt("row_index", -1);
+                if (idx > 0) {
+                    rowIndex = idx;
+                }
+            }
+
+            if (title.isEmpty() || isHexHashString(title) || isHexHashString(stripExtension(title))) {
+                ExtractedMetadata extracted = extractMetadata(file);
+                title = extracted.title;
+                if (originalUrl.isEmpty()) {
+                    originalUrl = extracted.originalUrl;
+                }
+
+                if (entry == null) {
+                    entry = new JSONObject();
+                }
+                try {
+                    entry.put("title", title);
+                    entry.put("original_url", originalUrl);
+                    if (rowIndex != Integer.MAX_VALUE) {
+                        entry.put("row_index", rowIndex);
+                    }
+                    entry.put("updated_at", System.currentTimeMillis() / 1000L);
+                    metadata.put(fileName, entry);
+                    metadataChanged = true;
+                } catch (Exception ignored) {
+                }
+            }
+
+            pendingItems.add(new FolderItem(rowIndex, title, originalUrl, fileName));
         }
+
+        pendingItems.sort((first, second) -> {
+            int rowCompare = Integer.compare(first.rowIndex, second.rowIndex);
+            if (rowCompare != 0) {
+                return rowCompare;
+            }
+            return first.title.compareToIgnoreCase(second.title);
+        });
+
+        for (int i = 0; i < pendingItems.size(); i++) {
+            FolderItem item = pendingItems.get(i);
+            int resolvedRowIndex = item.rowIndex == Integer.MAX_VALUE ? (i + 1) : item.rowIndex;
+            items.add(new UrlData(resolvedRowIndex, item.title, item.originalUrl, item.offlineFileName));
+        }
+
+        if (metadataChanged) {
+            saveFolderMetadata(context, folderName, metadata);
+        }
+
         return items;
     }
 
@@ -648,5 +677,331 @@ public final class OfflineStore {
             this.originalUrl = originalUrl;
             this.offlineFileName = offlineFileName;
         }
+    }
+
+    public static List<String> listAllLocalFolders(Context context) {
+        List<String> folders = new ArrayList<>();
+        File root = getRootDirectory(context);
+        File[] children = root.listFiles();
+        if (children == null) {
+            return folders;
+        }
+
+        for (File child : children) {
+            if (child.isDirectory()) {
+                folders.add(child.getName());
+            }
+        }
+
+        folders.sort(String::compareToIgnoreCase);
+        return folders;
+    }
+
+    public static String formatFileSize(long bytes) {
+        if (bytes <= 0) return "0 B";
+        final String[] units = new String[]{"B", "KB", "MB", "GB", "TB"};
+        int digitGroups = (int) (Math.log10(bytes) / Math.log10(1024));
+        if (digitGroups >= units.length) digitGroups = units.length - 1;
+        return String.format(Locale.US, "%.1f %s", bytes / Math.pow(1024, digitGroups), units[digitGroups]);
+    }
+
+    public static ValidationResult validateOfflineFile(File file) {
+        if (file == null || !file.exists() || !file.isFile()) {
+            return new ValidationResult(ValidationResult.Status.CORRUPTED, "File missing or inaccessible", 0, false, false);
+        }
+        long length = file.length();
+        if (length == 0) {
+            return new ValidationResult(ValidationResult.Status.CORRUPTED, "Empty file (0 B)", 0, false, false);
+        }
+
+        String lowerName = file.getName().toLowerCase(Locale.US);
+        boolean isMht = lowerName.endsWith(".mht");
+        boolean isHtml = lowerName.endsWith(".html") || lowerName.endsWith(".htm");
+
+        int bytesToRead = (int) Math.min(length, 32768L);
+        byte[] buffer = new byte[bytesToRead];
+        try (FileInputStream fis = new FileInputStream(file)) {
+            int read = fis.read(buffer);
+            if (read <= 0) {
+                return new ValidationResult(ValidationResult.Status.CORRUPTED, "Could not read file data", length, isHtml, isMht);
+            }
+            String snippet = new String(buffer, 0, read, StandardCharsets.UTF_8).toLowerCase(Locale.US);
+
+            if (snippet.contains("<title>404 not found</title>")
+                    || snippet.contains("<title>404 - not found")
+                    || snippet.contains("<h1>404 not found</h1>")
+                    || snippet.contains("404 page not found")
+                    || snippet.contains("wikipedia does not have an article with this exact name")) {
+                return new ValidationResult(ValidationResult.Status.CORRUPTED, "404 Not Found error page", length, isHtml, isMht);
+            }
+            if (snippet.contains("<title>403 forbidden</title>") || snippet.contains("403 forbidden") || snippet.contains("access denied")) {
+                return new ValidationResult(ValidationResult.Status.CORRUPTED, "403 Forbidden / Access Denied", length, isHtml, isMht);
+            }
+            if (snippet.contains("cloudflare ray id") || snippet.contains("attention required! | cloudflare")) {
+                return new ValidationResult(ValidationResult.Status.CORRUPTED, "Cloudflare Challenge / Blocked", length, isHtml, isMht);
+            }
+            if (snippet.contains("<title>502 bad gateway</title>") || snippet.contains("<title>503 service unavailable</title>")) {
+                return new ValidationResult(ValidationResult.Status.CORRUPTED, "Server Gateway / 503 error", length, isHtml, isMht);
+            }
+
+            if (length < 400 && !snippet.contains("<html") && !snippet.contains("<!doctype")) {
+                return new ValidationResult(ValidationResult.Status.CORRUPTED, "Incomplete snippet (" + length + " B)", length, isHtml, isMht);
+            }
+
+            if (isMht) {
+                boolean hasMhtHeader = snippet.contains("mime-version:")
+                        || snippet.contains("content-type: multipart/")
+                        || snippet.contains("boundary=")
+                        || snippet.contains("snapshot-content-location:")
+                        || snippet.contains("from: <saved by webrecorder>");
+                if (hasMhtHeader) {
+                    return new ValidationResult(ValidationResult.Status.VALID, "Valid MHTML archive (" + formatFileSize(length) + ")", length, false, true);
+                }
+                if (snippet.contains("<!doctype") || snippet.contains("<html") || snippet.contains("<body")) {
+                    return new ValidationResult(ValidationResult.Status.VALID, "Valid HTML format (" + formatFileSize(length) + ")", length, true, true);
+                }
+                return new ValidationResult(ValidationResult.Status.WARNING, "MHTML header missing or non-standard (" + formatFileSize(length) + ")", length, false, true);
+            }
+
+            boolean hasHtmlStructure = snippet.contains("<!doctype")
+                    || snippet.contains("<html")
+                    || snippet.contains("<body")
+                    || snippet.contains("<head")
+                    || snippet.contains("<div")
+                    || snippet.contains("<p");
+
+            if (hasHtmlStructure) {
+                if (length < 1024) {
+                    return new ValidationResult(ValidationResult.Status.WARNING, "Short HTML content (" + formatFileSize(length) + ")", length, true, false);
+                }
+                return new ValidationResult(ValidationResult.Status.VALID, "Valid HTML document (" + formatFileSize(length) + ")", length, true, false);
+            }
+
+            return new ValidationResult(ValidationResult.Status.CORRUPTED, "Non-HTML or corrupted file content", length, isHtml, isMht);
+        } catch (Exception e) {
+            return new ValidationResult(ValidationResult.Status.CORRUPTED, "Read error: " + e.getMessage(), length, isHtml, isMht);
+        }
+    }
+
+    public static FolderStats getFolderStats(Context context, String folderName) {
+        List<File> files = listHtmlFiles(context, folderName);
+        int valid = 0;
+        int warning = 0;
+        int corrupt = 0;
+        long totalSize = 0;
+        for (File f : files) {
+            totalSize += f.length();
+            ValidationResult res = validateOfflineFile(f);
+            if (res.isValid()) valid++;
+            else if (res.isWarning()) warning++;
+            else corrupt++;
+        }
+        return new FolderStats(folderName, files.size(), valid, warning, corrupt, totalSize);
+    }
+
+    public static boolean deleteOfflineFile(Context context, String folderName, String fileName) {
+        if (folderName == null || fileName == null) return false;
+        File dir = getFolderDirectory(context, folderName);
+        File file = new File(dir, fileName);
+        boolean deleted = false;
+        if (file.exists()) {
+            deleted = file.delete();
+        }
+        removeMetadataEntry(context, folderName, fileName);
+        queuePendingDeletion(context, folderName, fileName);
+        return deleted;
+    }
+
+    public static boolean deleteOfflineFolder(Context context, String folderName) {
+        if (folderName == null || folderName.trim().isEmpty()) return false;
+        File dir = getFolderDirectory(context, folderName);
+        if (!dir.exists()) return true;
+        File[] children = dir.listFiles();
+        if (children != null) {
+            for (File child : children) {
+                child.delete();
+            }
+        }
+        return dir.delete();
+    }
+
+    public static final class ValidationResult {
+        public enum Status {
+            VALID,
+            WARNING,
+            CORRUPTED
+        }
+
+        public final Status status;
+        public final String reason;
+        public final long fileSizeBytes;
+        public final boolean isHtml;
+        public final boolean isMht;
+
+        public ValidationResult(Status status, String reason, long fileSizeBytes, boolean isHtml, boolean isMht) {
+            this.status = status;
+            this.reason = reason;
+            this.fileSizeBytes = fileSizeBytes;
+            this.isHtml = isHtml;
+            this.isMht = isMht;
+        }
+
+        public boolean isValid() {
+            return status == Status.VALID;
+        }
+
+        public boolean isWarning() {
+            return status == Status.WARNING;
+        }
+
+        public boolean isCorrupted() {
+            return status == Status.CORRUPTED;
+        }
+    }
+
+    public static final class FolderStats {
+        public final String folderName;
+        public final int totalFiles;
+        public final int validFiles;
+        public final int warningFiles;
+        public final int corruptFiles;
+        public final long totalSizeBytes;
+
+        public FolderStats(String folderName, int totalFiles, int validFiles, int warningFiles, int corruptFiles, long totalSizeBytes) {
+            this.folderName = folderName;
+            this.totalFiles = totalFiles;
+            this.validFiles = validFiles;
+            this.warningFiles = warningFiles;
+            this.corruptFiles = corruptFiles;
+            this.totalSizeBytes = totalSizeBytes;
+        }
+    }
+
+    public static final class ExtractedMetadata {
+        public final String title;
+        public final String originalUrl;
+
+        public ExtractedMetadata(String title, String originalUrl) {
+            this.title = title == null ? "" : title;
+            this.originalUrl = originalUrl == null ? "" : originalUrl;
+        }
+    }
+
+    public static ExtractedMetadata extractMetadata(File file) {
+        if (file == null || !file.isFile() || file.length() == 0) {
+            return new ExtractedMetadata("", "");
+        }
+        String title = null;
+        String originalUrl = null;
+        try (FileInputStream fis = new FileInputStream(file)) {
+            byte[] buffer = new byte[Math.min((int) file.length(), 16384)];
+            int read = fis.read(buffer);
+            if (read > 0) {
+                String snippet = new String(buffer, 0, read, StandardCharsets.UTF_8);
+
+                // Extract title from <title>...</title>
+                Matcher titleMatcher = Pattern.compile("<title>([^<]+)</title>", Pattern.CASE_INSENSITIVE).matcher(snippet);
+                if (titleMatcher.find()) {
+                    title = titleMatcher.group(1).trim();
+                    if (title.endsWith(" - Wikipedia")) {
+                        title = title.substring(0, title.length() - 12).trim();
+                    }
+                    title = cleanHtmlEntities(title);
+                }
+
+                // Extract originalUrl from <base href="..." />
+                Matcher baseMatcher = Pattern.compile("<base[^>]+href=[\"']([^\"']+)[\"']", Pattern.CASE_INSENSITIVE).matcher(snippet);
+                if (baseMatcher.find()) {
+                    originalUrl = baseMatcher.group(1).trim();
+                } else {
+                    Matcher canMatcher = Pattern.compile("<link[^>]+rel=[\"']canonical[\"'][^>]+href=[\"']([^\"']+)[\"']", Pattern.CASE_INSENSITIVE).matcher(snippet);
+                    if (canMatcher.find()) {
+                        originalUrl = canMatcher.group(1).trim();
+                    }
+                }
+
+                // Fallbacks if MHTML MIME header style:
+                if (title == null) {
+                    Matcher subjMatcher = Pattern.compile("subject:\\s*([^\\r\\n]+)", Pattern.CASE_INSENSITIVE).matcher(snippet);
+                    if (subjMatcher.find()) {
+                        title = subjMatcher.group(1).trim();
+                        if (title.endsWith(" - Wikipedia")) {
+                            title = title.substring(0, title.length() - 12).trim();
+                        }
+                    }
+                }
+                if (originalUrl == null) {
+                    Matcher locMatcher = Pattern.compile("snapshot-content-location:\\s*(\\S+)", Pattern.CASE_INSENSITIVE).matcher(snippet);
+                    if (locMatcher.find()) {
+                        originalUrl = locMatcher.group(1).trim();
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+        }
+
+        if (title == null || title.trim().isEmpty() || isHexHashString(title)) {
+            title = stripExtension(file.getName());
+        }
+        if (originalUrl == null) {
+            originalUrl = "";
+        }
+        return new ExtractedMetadata(title, originalUrl);
+    }
+
+    public static boolean isTrueMhtmlArchive(File file) {
+        if (file == null || !file.isFile() || file.length() < 10) {
+            return false;
+        }
+        try (FileInputStream fis = new FileInputStream(file)) {
+            byte[] buffer = new byte[Math.min((int) file.length(), 4096)];
+            int read = fis.read(buffer);
+            if (read <= 0) {
+                return false;
+            }
+            String snippet = new String(buffer, 0, read, StandardCharsets.UTF_8).toLowerCase(Locale.US).trim();
+            if (snippet.startsWith("<!doctype") || snippet.startsWith("<html") || snippet.startsWith("<?xml")) {
+                return false;
+            }
+            return snippet.contains("mime-version:")
+                    || snippet.contains("content-type: multipart/")
+                    || snippet.contains("boundary=")
+                    || snippet.contains("snapshot-content-location:")
+                    || snippet.contains("from: <saved by");
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    public static String readOfflineHtml(File offlineFile) throws IOException {
+        byte[] bytes = Files.readAllBytes(offlineFile.toPath());
+        if (bytes.length >= 3 && (bytes[0] & 0xFF) == 0xEF && (bytes[1] & 0xFF) == 0xBB && (bytes[2] & 0xFF) == 0xBF) {
+            return new String(bytes, 3, bytes.length - 3, StandardCharsets.UTF_8);
+        }
+        return new String(bytes, StandardCharsets.UTF_8);
+    }
+
+    private static String cleanHtmlEntities(String text) {
+        if (text == null) return "";
+        return text.replace("&amp;", "&")
+                .replace("&#039;", "'")
+                .replace("&apos;", "'")
+                .replace("&quot;", "\"")
+                .replace("&lt;", "<")
+                .replace("&gt;", ">")
+                .trim();
+    }
+
+    private static boolean isHexHashString(String s) {
+        if (s == null || (s.length() != 32 && s.length() != 40 && s.length() != 64)) {
+            return false;
+        }
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
+                return false;
+            }
+        }
+        return true;
     }
 }

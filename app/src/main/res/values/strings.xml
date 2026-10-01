@@ -49,4 +49,10 @@
     <string name="confirm_delete_title">Delete / Moderate Entry</string>
     <string name="confirm_delete_msg">Are you sure you want to delete "%s"? It will be removed from local memory, offline storage, Excel sheet, and queued for server removal.</string>
     <string name="entry_deleted">Entry removed successfully.</string>
+    <string name="auto_batch_downloader">Auto Batch Downloader</string>
+    <string name="offline_manager">Offline Manager</string>
+    <string name="offline_viewer">Offline Viewer</string>
+    <string name="validate_all">Validate All</string>
+    <string name="sync_folder">Sync Folder</string>
+    <string name="open_in_recorder">Open in Recorder</string>
 </resources>

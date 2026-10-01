@@ -80,6 +80,7 @@ import android.view.LayoutInflater;
 import android.view.Menu;
 import android.view.MenuItem;
 import android.view.View;
+import android.view.ViewGroup;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.Button;
@@ -258,6 +259,28 @@ extends AppCompatActivity {
             }
         });
         this.updateUiForRecordingState();
+
+        Intent initialIntent = this.getIntent();
+        if (initialIntent != null) {
+            String extraFolder = initialIntent.getStringExtra("extra_folder_name");
+            if (extraFolder != null && !extraFolder.isEmpty()) {
+                int extraIndex = initialIntent.getIntExtra("extra_target_index", 0);
+                this.loadDownloadedFolder(extraFolder, extraIndex);
+            }
+        }
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        this.setIntent(intent);
+        if (intent != null) {
+            String extraFolder = intent.getStringExtra("extra_folder_name");
+            if (extraFolder != null && !extraFolder.isEmpty()) {
+                int extraIndex = intent.getIntExtra("extra_target_index", 0);
+                this.loadDownloadedFolder(extraFolder, extraIndex);
+            }
+        }
     }
 
     protected void onResume() {
@@ -434,6 +457,7 @@ extends AppCompatActivity {
         }
 
         dialog.show();
+        this.constrainFolderDialogHeight(dialog, dialogView);
     }
 
     private void openAssetsFolderPicker() {
@@ -464,6 +488,26 @@ extends AppCompatActivity {
         }
 
         dialog.show();
+        this.constrainFolderDialogHeight(dialog, dialogView);
+    }
+
+    private void constrainFolderDialogHeight(AlertDialog dialog, View dialogView) {
+        if (dialog == null || dialogView == null) {
+            return;
+        }
+        View scrollView = dialogView.findViewById(R.id.folder_scroll_view);
+        if (scrollView == null) {
+            return;
+        }
+        scrollView.post(() -> {
+            int screenHeight = this.getResources().getDisplayMetrics().heightPixels;
+            int maxHeight = (int) (screenHeight * 0.65);
+            if (scrollView.getHeight() > maxHeight) {
+                ViewGroup.LayoutParams lp = scrollView.getLayoutParams();
+                lp.height = maxHeight;
+                scrollView.setLayoutParams(lp);
+            }
+        });
     }
 
     private View createFolderCardView(String title, String subtitle, int iconResId, View.OnClickListener listener) {
@@ -766,28 +810,40 @@ extends AppCompatActivity {
         if (this.currentIndex < 0 || this.currentIndex >= this.urlDataList.size()) {
             return;
         }
+        if (this.placeholderContainer != null) {
+            this.placeholderContainer.setVisibility(View.GONE);
+        }
+        this.placeholderView.setVisibility(View.GONE);
+        this.webView.setVisibility(View.VISIBLE);
+
         UrlData currentData = this.urlDataList.get(this.currentIndex);
         File offlineFile = this.getOfflineHtmlFile(currentData);
         this.isLoadedFromExcel = true;
         if (offlineFile.exists()) {
-            if (offlineFile.getName().toLowerCase(Locale.US).endsWith(".mht")) {
-                this.currentPageLoadedOffline = true;
-                this.pendingOfflineSave = null;
-                OfflineStore.upsertMetadataEntry((Context)this, this.currentSheetFolderName, currentData);
-                this.webView.loadUrl(Uri.fromFile(offlineFile).toString());
+            this.currentPageLoadedOffline = true;
+            this.pendingOfflineSave = null;
+            OfflineStore.upsertMetadataEntry((Context)this, this.currentSheetFolderName, currentData);
+
+            if (OfflineStore.isTrueMhtmlArchive(offlineFile)) {
+                this.webView.loadUrl("file://" + offlineFile.getAbsolutePath());
             } else {
                 try {
                     String offlineHtml = this.readOfflineHtml(offlineFile);
-                    this.currentPageLoadedOffline = true;
-                    this.pendingOfflineSave = null;
-                    OfflineStore.upsertMetadataEntry((Context)this, this.currentSheetFolderName, currentData);
-                    String folderBaseUrl = Uri.fromFile(offlineFile.getParentFile()).toString() + "/";
+                    offlineHtml = OfflineViewerActivity.injectOfflineFallbackCss(offlineHtml);
+                    offlineHtml = OfflineViewerActivity.stripExternalResources(offlineHtml);
+                    String folderBaseUrl = "file://" + offlineFile.getParentFile().getAbsolutePath() + "/";
                     String historyUrl = currentData.getWebUrl() == null || currentData.getWebUrl().trim().isEmpty() ? folderBaseUrl : currentData.getWebUrl().trim();
                     this.webView.loadDataWithBaseURL(folderBaseUrl, offlineHtml, "text/html", "UTF-8", historyUrl);
                 }
                 catch (IOException e) {
                     Log.e((String)TAG, (String)"Failed to read offline HTML", (Throwable)e);
-                    this.loadLiveUrlOrShowError(currentData);
+                    // Show error inline instead of trying network (which would fail/timeout offline)
+                    String errorHtml = "<html><body style='font-family:sans-serif;text-align:center;padding:40px;color:#333;'>"
+                            + "<h2 style='color:#e53935;'>Offline File Read Error</h2>"
+                            + "<p>Could not read: <code>" + offlineFile.getName() + "</code></p>"
+                            + "<p style='color:#888;'>" + e.getMessage() + "</p>"
+                            + "</body></html>";
+                    this.webView.loadDataWithBaseURL(null, errorHtml, "text/html", "UTF-8", null);
                 }
             }
         } else {
@@ -1196,11 +1252,7 @@ extends AppCompatActivity {
     }
 
     private String readOfflineHtml(File offlineFile) throws IOException {
-        byte[] bytes = Files.readAllBytes(offlineFile.toPath());
-        if (bytes.length >= 3 && (bytes[0] & 0xFF) == 0xEF && (bytes[1] & 0xFF) == 0xBB && (bytes[2] & 0xFF) == 0xBF) {
-            return new String(bytes, 3, bytes.length - 3, StandardCharsets.UTF_8);
-        }
-        return new String(bytes, StandardCharsets.UTF_8);
+        return OfflineStore.readOfflineHtml(offlineFile);
     }
 
     private File getOfflineHtmlFile(UrlData data) {
@@ -1555,6 +1607,14 @@ extends AppCompatActivity {
         }
         if (item.getItemId() == R.id.action_delete_entry) {
             this.confirmAndDeleteCurrentEntry();
+            return true;
+        }
+        if (item.getItemId() == R.id.action_offline_manager) {
+            this.startActivity(new Intent((Context)this, OfflineManagerActivity.class));
+            return true;
+        }
+        if (item.getItemId() == R.id.action_batch_auto) {
+            this.startActivity(new Intent((Context)this, BatchAutoProcessActivity.class));
             return true;
         }
         if (item.getItemId() == R.id.action_sync) {

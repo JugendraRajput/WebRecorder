@@ -19,6 +19,14 @@
         app:iconTint="@android:color/white"
         app:showAsAction="ifRoom" />
     <item
+        android:id="@+id/action_offline_manager"
+        android:title="@string/offline_manager"
+        app:showAsAction="never" />
+    <item
+        android:id="@+id/action_batch_auto"
+        android:title="@string/auto_batch_downloader"
+        app:showAsAction="never" />
+    <item
         android:id="@+id/action_sync"
         android:title="@string/sync_settings"
         app:showAsAction="never" />

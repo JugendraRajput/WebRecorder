@@ -62,11 +62,20 @@
         android:layout_marginBottom="16dp"
         android:background="@color/divider_color" />
 
-    <!-- Container for dynamic folder item cards -->
-    <LinearLayout
-        android:id="@+id/folder_list_container"
+    <!-- Scrollable container for dynamic folder item cards -->
+    <androidx.core.widget.NestedScrollView
+        android:id="@+id/folder_scroll_view"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="vertical" />
+        android:fadeScrollbars="false"
+        android:overScrollMode="ifContentScrolls"
+        android:scrollbars="vertical">
+
+        <LinearLayout
+            android:id="@+id/folder_list_container"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical" />
+    </androidx.core.widget.NestedScrollView>
 
 </LinearLayout>

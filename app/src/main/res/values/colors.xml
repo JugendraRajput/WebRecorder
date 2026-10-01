@@ -34,4 +34,9 @@
     <color name="text_secondary">#64748B</color>
     <color name="text_tertiary">#94A3B8</color>
     <color name="divider_color">#E2E8F0</color>
+
+    <!-- Validation Badges -->
+    <color name="badge_valid_text">#15803D</color>
+    <color name="badge_warning_text">#B45309</color>
+    <color name="badge_corrupt_text">#B91C1C</color>
 </resources>
